@@ -1,4 +1,5 @@
 # rubik_sim/render/cube_gl_widget.py
+import math
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -13,6 +14,7 @@ from OpenGL.GL import (
     GL_DITHER, GL_BLEND
 )
 from OpenGL.GLU import gluPerspective
+
 
 # selecionar el color de highlight
 #hb = (1.0, 1.0, 0.2)  # amarillo suave
@@ -174,6 +176,7 @@ class CubeGLWidget(QOpenGLWidget):
 
             face, r, c = self._drag_hit
             move = self._decide_move_from_drag(face, r, c, dx, dy)
+
 
 
             if move:
@@ -588,16 +591,151 @@ class CubeGLWidget(QOpenGLWidget):
         }
         return palette.get(c, (0.8, 0.8, 0.8))
     
+
     def _decide_move_from_drag(self, face, r, c, dx, dy):
-        # vectores base por cara (coinciden con cómo dibujas r/c)
-        basis = {
-            "F": ((0, 0, 1), (1, 0, 0), (0, 1, 0)),
-            "B": ((0, 0, -1), (-1, 0, 0), (0, 1, 0)),
-            "R": ((1, 0, 0), (0, 0, 1), (0, 1, 0)),
-            "L": ((-1, 0, 0), (0, 0, -1), (0, 1, 0)),
-            "U": ((0, 1, 0), (1, 0, 0), (0, 0, -1)),
-            "D": ((0, -1, 0), (1, 0, 0), (0, 0, 1)),
+        # -------------------------
+        # helpers vectoriales
+        # -------------------------
+        def cross(a, b):
+            return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+        def dot(a, b):
+            return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+        def norm(v):
+            return math.sqrt(dot(v, v))
+
+        def scale(v, s):
+            return (v[0]*s, v[1]*s, v[2]*s)
+
+        def sub(a, b):
+            return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+
+        def sgn(v):
+            return 1 if v > 0 else (-1 if v < 0 else 0)
+
+        # -------------------------
+        # centro discreto del sticker (x,y,z) en {-1,0,1}
+        # (MISMO mapeo que en CubeModel y tu render)
+        # -------------------------
+        def sticker_center(face, r, c):
+            if face == "F":
+                return (c-1, 1-r, 1)
+            if face == "B":
+                return (1-c, 1-r, -1)
+            if face == "R":
+                return (1, 1-r, c-1)
+            if face == "L":
+                return (-1, 1-r, 1-c)
+            if face == "U":
+                return (c-1, 1, r-1)
+            if face == "D":
+                return (c-1, -1, 1-r)
+
+        FACE_NORMAL = {
+            "F": (0, 0, 1),
+            "B": (0, 0, -1),
+            "R": (1, 0, 0),
+            "L": (-1, 0, 0),
+            "U": (0, 1, 0),
+            "D": (0, -1, 0),
         }
+
+        n = FACE_NORMAL[face]
+        p = sticker_center(face, r, c)
+
+        # -------------------------
+        # 1) drag de pantalla -> vector "mundo"
+        # derecha = +x, arriba = +y (pero en Qt dy>0 es hacia abajo)
+        # -------------------------
+        d_world = (dx, -dy, 0.0)
+
+        # -------------------------
+        # 2) mundo -> coordenadas del cubo
+        # (inversa de la rotación que aplicas en OpenGL)
+        # OpenGL: Rotate pitch (X) luego yaw (Y) => R = Rx(pitch)*Ry(yaw)
+        # Inversa: R^-1 = Ry(-yaw)*Rx(-pitch)
+        # -------------------------
+        yaw = math.radians(self.yaw)
+        pitch = math.radians(self.pitch)
+
+        # aplicar Rx(-pitch)
+        cx = math.cos(-pitch); sx = math.sin(-pitch)
+        x0, y0, z0 = d_world
+        d1 = (x0, cx*y0 - sx*z0, sx*y0 + cx*z0)
+
+        # aplicar Ry(-yaw)
+        cy = math.cos(-yaw); sy = math.sin(-yaw)
+        x1, y1, z1 = d1
+        d_cube = (cy*x1 + sy*z1, y1, -sy*x1 + cy*z1)
+
+        # -------------------------
+        # 3) proyectar el drag al plano de la cara
+        # -------------------------
+        d_plane = sub(d_cube, scale(n, dot(d_cube, n)))
+
+        if norm(d_plane) < 1e-6:
+            return None
+
+        # -------------------------
+        # 4) eje de giro: axis = n x d_plane
+        # -------------------------
+        axis = cross(n, d_plane)
+
+        # elegir eje dominante x/y/z
+        ax = [abs(axis[0]), abs(axis[1]), abs(axis[2])]
+        i = ax.index(max(ax))
+        axis_pos = "xyz"[i]
+        axis_sign = sgn(axis[i])
+
+        layer = int(round(p[i]))  # -1,0,1
+
+        # -------------------------
+        # 5) decidir sentido (prime/no-prime)
+        # medimos si rotación +90 alrededor del eje REAL acerca el movimiento al drag
+        # -------------------------
+        axis_unit = (axis_sign, 0, 0) if axis_pos == "x" else (0, axis_sign, 0) if axis_pos == "y" else (0, 0, axis_sign)
+        v = cross(axis_unit, p)
+        rot_about_axis_unit = 1 if dot(v, d_plane) > 0 else -1
+        rot_about_pos = rot_about_axis_unit * axis_sign  # respecto al eje +x/+y/+z
+
+        # -------------------------
+        # 6) mapear a movimientos (misma convención que tu CubeModel geométrico)
+        # -------------------------
+        if axis_pos == "y":
+            if layer == 1:
+                return "U" if rot_about_pos == 1 else "U'"
+            if layer == 0:
+                # E es como D (y=0, -90)
+                return "E'" if rot_about_pos == 1 else "E"
+            if layer == -1:
+                # D es -90
+                return "D'" if rot_about_pos == 1 else "D"
+
+        if axis_pos == "x":
+            if layer == 1:
+                # R es -90
+                return "R'" if rot_about_pos == 1 else "R"
+            if layer == 0:
+                # M es como L (x=0, +90)
+                return "M" if rot_about_pos == 1 else "M'"
+            if layer == -1:
+                # L es +90
+                return "L" if rot_about_pos == 1 else "L'"
+
+        if axis_pos == "z":
+            if layer == 1:
+                # F es -90
+                return "F'" if rot_about_pos == 1 else "F"
+            if layer == 0:
+                # S es como F (z=0, -90)
+                return "S'" if rot_about_pos == 1 else "S"
+            if layer == -1:
+                # B es +90
+                return "B" if rot_about_pos == 1 else "B'"
+
+        return None
+
 
         def cross(a, b):
             return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
