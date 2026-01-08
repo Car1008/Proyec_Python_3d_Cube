@@ -173,7 +173,8 @@ class CubeGLWidget(QOpenGLWidget):
                 return
 
             face, r, c = self._drag_hit
-            move = self._decide_move_from_drag(face, dx, dy)
+            move = self._decide_move_from_drag(face, r, c, dx, dy)
+
 
             if move:
                 self.model.apply_move(move)
@@ -586,52 +587,101 @@ class CubeGLWidget(QOpenGLWidget):
             "B": (0.0, 0.35, 1.0),
         }
         return palette.get(c, (0.8, 0.8, 0.8))
-    def _decide_move_from_drag(self, face, dx, dy):
-        """
-        Versión 1: usa la dirección del drag + cara para decidir un movimiento básico.
-        No usa fila/columna todavía.
+    
+    def _decide_move_from_drag(self, face, r, c, dx, dy):
+        # vectores base por cara (coinciden con cómo dibujas r/c)
+        basis = {
+            "F": ((0, 0, 1), (1, 0, 0), (0, 1, 0)),
+            "B": ((0, 0, -1), (-1, 0, 0), (0, 1, 0)),
+            "R": ((1, 0, 0), (0, 0, 1), (0, 1, 0)),
+            "L": ((-1, 0, 0), (0, 0, -1), (0, 1, 0)),
+            "U": ((0, 1, 0), (1, 0, 0), (0, 0, -1)),
+            "D": ((0, -1, 0), (1, 0, 0), (0, 0, 1)),
+        }
 
-        dx>0 = drag hacia la derecha
-        dy>0 = drag hacia abajo
-        """
+        def cross(a, b):
+            return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+        def dot(a, b):
+            return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+        def sgn(v):
+            return 1 if v > 0 else (-1 if v < 0 else 0)
+
+        # centro discreto del sticker en coords de cubo (x,y,z en {-1,0,1})
+        def sticker_center(face, r, c):
+            if face == "F":
+                return (c-1, 1-r, 1)
+            if face == "B":
+                return (1-c, 1-r, -1)
+            if face == "R":
+                return (1, 1-r, c-1)
+            if face == "L":
+                return (-1, 1-r, 1-c)
+            if face == "U":
+                return (c-1, 1, r-1)
+            if face == "D":
+                return (c-1, -1, 1-r)
+
+        n, a, b = basis[face]
+        p = sticker_center(face, r, c)
+
         horizontal = abs(dx) >= abs(dy)
 
-        # Mapeo simple (lo ajustamos si quieres “sensación” distinta)
-        if face == "F":
-            if horizontal:
-                return "U" if dx > 0 else "U'"
-            else:
-                return "R" if dy > 0 else "R'"
+        # drag direction en plano de la cara (en coords de cubo)
+        if horizontal:
+            d = a if dx > 0 else (-a[0], -a[1], -a[2])
+        else:
+            # dy>0 es “hacia abajo” en pantalla => -b
+            d = (-b[0], -b[1], -b[2]) if dy > 0 else b
 
-        if face == "B":
-            if horizontal:
-                return "U'" if dx > 0 else "U"
-            else:
-                return "L" if dy > 0 else "L'"
+        axis = cross(n, d)  # eje de giro (±x, ±y, ±z)
 
-        if face == "U":
-            if horizontal:
-                return "F" if dx > 0 else "F'"
-            else:
-                return "R'" if dy > 0 else "R"
+        # elegir eje dominante
+        ax = [abs(axis[0]), abs(axis[1]), abs(axis[2])]
+        i = ax.index(max(ax))
+        axis_pos = "xyz"[i]
+        axis_sign = sgn(axis[i])
 
-        if face == "D":
-            if horizontal:
-                return "F'" if dx > 0 else "F"
-            else:
-                return "R" if dy > 0 else "R'"
+        # layer: -1,0,1 según coordenada del sticker en ese eje
+        layer = int(round(p[i]))
 
-        if face == "R":
-            if horizontal:
-                return "U'" if dx > 0 else "U"
-            else:
-                return "F" if dy > 0 else "F'"
+        # dirección de giro: probamos +90 sobre el eje real (con signo) usando v = w x p
+        axis_unit = (0, 0, 0)
+        axis_unit = (axis_sign, 0, 0) if axis_pos == "x" else axis_unit
+        axis_unit = (0, axis_sign, 0) if axis_pos == "y" else axis_unit
+        axis_unit = (0, 0, axis_sign) if axis_pos == "z" else axis_unit
 
-        if face == "L":
-            if horizontal:
-                return "U" if dx > 0 else "U'"
-            else:
-                return "F'" if dy > 0 else "F"
+        v = cross(axis_unit, p)
+        rot_about_axis_unit = 1 if dot(v, d) > 0 else -1
+
+        # convertir a rotación sobre eje POSITIVO (x,y,z)
+        rot_about_pos = rot_about_axis_unit * axis_sign
+
+        # mapear (axis_pos, layer, rot_about_pos) -> movimiento
+        if axis_pos == "y":
+            if layer == 1:   # U
+                return "U" if rot_about_pos == 1 else "U'"
+            if layer == 0:   # E (E es -90)
+                return "E'" if rot_about_pos == 1 else "E"
+            if layer == -1:  # D (D es -90)
+                return "D'" if rot_about_pos == 1 else "D"
+
+        if axis_pos == "x":
+            if layer == 1:   # R (R es -90)
+                return "R'" if rot_about_pos == 1 else "R"
+            if layer == 0:   # M (M es +90)
+                return "M" if rot_about_pos == 1 else "M'"
+            if layer == -1:  # L (L es +90)
+                return "L" if rot_about_pos == 1 else "L'"
+
+        if axis_pos == "z":
+            if layer == 1:   # F (F es -90)
+                return "F'" if rot_about_pos == 1 else "F"
+            if layer == 0:   # S (S es -90)
+                return "S'" if rot_about_pos == 1 else "S"
+            if layer == -1:  # B (B es +90)
+                return "B" if rot_about_pos == 1 else "B'"
 
         return None
 

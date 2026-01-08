@@ -85,9 +85,17 @@ class CubeModel:
             return
 
         base = move[0]
-        if base not in ("U", "D", "L", "R", "F", "B"):
+        if base not in ("U", "D", "L", "R", "F", "B", "E", "M", "S"):
             raise ValueError(f"Movimiento inválido: {move}")
+        
+        elif base == "E":
+            self._move_E()
+        elif base == "M":
+            self._move_M()
+        elif base == "S":
+            self._move_S()
 
+        
         # Determinar cantidad de giros (cw)
         if move.endswith("2"):
             times = 2
@@ -98,7 +106,8 @@ class CubeModel:
 
         for _ in range(times):
             self._apply_base_move_cw(base)
-
+            
+        
     def apply_sequence(self, seq: str):
         """
         Aplica una secuencia tipo: "R U R' U'"
@@ -279,3 +288,5 @@ class CubeModel:
         self._set_row("D", 2, l)
         # R col2 <- D row2 (old) (reversa)
         self._set_col("R", 2, d[::-1])
+
+
