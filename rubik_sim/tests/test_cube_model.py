@@ -78,6 +78,27 @@ class TestCubeModel(unittest.TestCase):
         c.apply_move("B")
         c.apply_move("B'")
         self.assertEqual(before, c.to_hashable())
+        
+    def test_E_then_Eprime_returns(self):
+        c = CubeModel()
+        before = c.to_hashable()
+        c.apply_move("E")
+        c.apply_move("E'")
+        self.assertEqual(before, c.to_hashable())
+
+    def test_M_then_Mprime_returns(self):
+        c = CubeModel()
+        before = c.to_hashable()
+        c.apply_move("M")
+        c.apply_move("M'")
+        self.assertEqual(before, c.to_hashable())
+
+    def test_S_then_Sprime_returns(self):
+        c = CubeModel()
+        before = c.to_hashable()
+        c.apply_move("S")
+        c.apply_move("S'")
+        self.assertEqual(before, c.to_hashable())
 
 if __name__ == "__main__":
     unittest.main()
