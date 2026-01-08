@@ -1,24 +1,13 @@
 # main.py
 import sys
-from PySide6.QtWidgets import QApplication, QMainWindow, QLabel
-from PySide6.QtCore import Qt
-
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Rubik 3D Simulator (PySide6)")
-        self.resize(1000, 650)
-
-        label = QLabel("Proyecto inicial listo ✅\nSiguiente: CubeModel (core) y tests.")
-        label.setAlignment(Qt.AlignCenter)
-        self.setCentralWidget(label)
+from PySide6.QtWidgets import QApplication
+from rubik_sim.app.main_window import MainWindow
 
 
 def main():
     app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
+    w = MainWindow()
+    w.show()
     sys.exit(app.exec())
 
 
