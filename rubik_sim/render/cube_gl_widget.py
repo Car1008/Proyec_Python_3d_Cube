@@ -3,28 +3,30 @@ from PySide6.QtCore import Qt, QPoint
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from OpenGL.GL import (
-    glClearColor, glClear, glEnable, glViewport,
+    glClearColor, glClear, glEnable, glDisable, glViewport,
     glBegin, glEnd, glColor3f, glVertex3f,
     glMatrixMode, glLoadIdentity, glRotatef, glTranslatef,
+    glReadPixels, glFlush,
     GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_DEPTH_TEST,
-    GL_PROJECTION, GL_MODELVIEW, GL_QUADS
+    GL_PROJECTION, GL_MODELVIEW, GL_QUADS,
+    GL_RGB, GL_UNSIGNED_BYTE,
+    GL_DITHER, GL_BLEND
 )
 from OpenGL.GLU import gluPerspective
 
 
 class CubeGLWidget(QOpenGLWidget):
     """
-    Render 3D con OpenGL clásico.
-    - Dibuja cubo plástico oscuro + stickers 3x3 por cara
-    - Colores vienen desde CubeModel.state (U,D,L,R,F,B)
-    - Orbit: click derecho + arrastrar
-    - Zoom: rueda
+    Render 3D (OpenGL clásico) + stickers 3x3 + picking por color.
+    - Left click: selecciona sticker (cara, fila, columna)
+    - Right drag: orbit
+    - Wheel: zoom
     """
 
     def __init__(self, model, parent=None):
         super().__init__(parent)
 
-        self.model = model  # CubeModel
+        self.model = model
 
         # Cámara / orbit
         self.yaw = 35.0
@@ -34,11 +36,14 @@ class CubeGLWidget(QOpenGLWidget):
         self._last_mouse_pos = QPoint()
         self._orbiting = False
 
-        self.setFocusPolicy(Qt.ClickFocus)
+        # Stickers
+        self.sticker_margin = 0.06
+        self.sticker_offset = 0.01
 
-        # Tamaño de sticker y separación (margen dentro de cada celda)
-        self.sticker_margin = 0.06      # en unidades del cubo (se ve como “líneas negras”)
-        self.sticker_offset = 0.01      # levanta stickers para evitar z-fighting
+        # Selección (face, r, c)
+        self.selected = None
+
+        self.setFocusPolicy(Qt.ClickFocus)
 
     # --------------------------
     # OpenGL lifecycle
@@ -50,34 +55,43 @@ class CubeGLWidget(QOpenGLWidget):
     def resizeGL(self, w, h):
         if h == 0:
             h = 1
-        glViewport(0, 0, w, h)
+
+        dpr = self.devicePixelRatioF()
+        fb_w = int(w * dpr)
+        fb_h = int(h * dpr)
+
+        glViewport(0, 0, fb_w, fb_h)
 
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        aspect = w / float(h)
+        aspect = fb_w / float(fb_h)
         gluPerspective(45.0, aspect, 0.1, 100.0)
 
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
+
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         # Cámara
+        self._apply_camera()
+
+        # 1) Cubo plástico base
+        self._draw_plastic_cube()
+
+        # 2) Stickers desde el modelo (con highlight si hay selección)
+        self._draw_all_stickers(highlight=self.selected)
+
+    def _apply_camera(self):
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
         glTranslatef(0.0, 0.0, -self.distance)
         glRotatef(self.pitch, 1.0, 0.0, 0.0)
         glRotatef(self.yaw, 0.0, 1.0, 0.0)
 
-        # 1) Cubo plástico base
-        self._draw_plastic_cube()
-
-        # 2) Stickers 3x3 por cara (desde CubeModel)
-        self._draw_all_stickers()
-
     # --------------------------
-    # Interacción (orbit)
+    # Interacción
     # --------------------------
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -85,6 +99,27 @@ class CubeGLWidget(QOpenGLWidget):
             self._last_mouse_pos = event.pos()
             event.accept()
             return
+
+        if event.button() == Qt.LeftButton:
+            hit = self.pick_sticker(event.pos().x(), event.pos().y())
+            self.selected = hit
+            if hit:
+                face, r, c = hit
+                msg = f"Seleccionado: {face} (fila={r}, col={c})"
+            else:
+                msg = "Sin selección (clic fuera de stickers)."
+
+            # Mostrar en status bar si existe
+            w = self.window()
+            if hasattr(w, "statusBar") and w.statusBar():
+                w.statusBar().showMessage(msg, 3000)
+            else:
+                print(msg)
+
+            self.update()
+            event.accept()
+            return
+
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -118,17 +153,73 @@ class CubeGLWidget(QOpenGLWidget):
         event.accept()
 
     # --------------------------
+    # Picking (color picking)
+    # --------------------------
+    def pick_sticker(self, x, y):
+        dpr = self.devicePixelRatioF()
+
+        # coords en framebuffer real
+        gl_x = int(x * dpr)
+        gl_y = int((self.height() - y - 1) * dpr)
+
+        self.makeCurrent()
+
+        # (opcional) desactivar multisample si existe
+        try:
+            from OpenGL.GL import glDisable, GL_MULTISAMPLE
+            glDisable(GL_MULTISAMPLE)
+        except Exception:
+            pass
+
+        glDisable(GL_DITHER)
+        glDisable(GL_BLEND)
+
+        # Render pass picking
+        glClearColor(0.0, 0.0, 0.0, 1.0)  # id=0 fondo
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        self._apply_camera()
+        mapping = self._draw_all_stickers_pick()
+
+        glFlush()
+
+        pixel = glReadPixels(gl_x, gl_y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE)
+
+        # pixel puede venir como bytes o array
+        if pixel is None:
+            return None
+
+        if isinstance(pixel, (bytes, bytearray)):
+            r, g, b = pixel[0], pixel[1], pixel[2]
+        else:
+            # a veces retorna array-like
+            try:
+                r, g, b = int(pixel[0]), int(pixel[1]), int(pixel[2])
+            except Exception:
+                return None
+
+        pick_id = r + (g << 8) + (b << 16)
+        return mapping.get(pick_id, None)
+
+
+    def _encode_id_color(self, pick_id: int):
+        """
+        Convierte un ID (1..54) a un color RGB (0..1) para picking.
+        """
+        r = (pick_id & 0xFF) / 255.0
+        g = ((pick_id >> 8) & 0xFF) / 255.0
+        b = ((pick_id >> 16) & 0xFF) / 255.0
+        return (r, g, b)
+
+    # --------------------------
     # Dibujos
     # --------------------------
     def _draw_plastic_cube(self):
-        """
-        Dibuja el cubo base oscuro (plástico).
-        """
-        plastic = (0.05, 0.05, 0.06)  # gris oscuro
+        plastic = (0.05, 0.05, 0.06)
         glBegin(GL_QUADS)
 
-        # Front z=+1
         glColor3f(*plastic)
+        # Front z=+1
         glVertex3f(-1, -1,  1)
         glVertex3f( 1, -1,  1)
         glVertex3f( 1,  1,  1)
@@ -163,18 +254,17 @@ class CubeGLWidget(QOpenGLWidget):
         glVertex3f( 1, -1,  1)
         glVertex3f( 1, -1, -1)
         glVertex3f(-1, -1, -1)
-
+    
         glEnd()
 
-    def _draw_all_stickers(self):
+    def _draw_all_stickers(self, highlight=None):
         """
-        Dibuja stickers 3x3 para U, D, L, R, F, B usando self.model.state.
+        Dibuja stickers con colores del modelo.
+        highlight: (face, r, c) o None
         """
-        # Paso de celda en coordenadas [-1,1] => 2/3
         step = 2.0 / 3.0
         m = self.sticker_margin
 
-        # Helper para dibujar un sticker en un quad
         def draw_quad(v0, v1, v2, v3, rgb):
             glColor3f(*rgb)
             glVertex3f(*v0)
@@ -184,129 +274,255 @@ class CubeGLWidget(QOpenGLWidget):
 
         glBegin(GL_QUADS)
 
-        # -------- FRONT (F) : z = +1 + offset
+        # FRONT (F)
         z = 1.0 + self.sticker_offset
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                x_min = -1.0 + c * step
-                x_max = x_min + step
+        self._draw_face_stickers("F", z, step, m, draw_quad, highlight)
 
-                color = self.model.state["F"][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                v0 = (x_min + m, y_min + m, z)
-                v1 = (x_max - m, y_min + m, z)
-                v2 = (x_max - m, y_max - m, z)
-                v3 = (x_min + m, y_max - m, z)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-        # -------- BACK (B) : z = -1 - offset (invertimos columnas)
+        # BACK (B)
         z = -1.0 - self.sticker_offset
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                # flip en x para que el "lado izquierdo" del B al mirarlo desde fuera sea correcto
-                x_max = 1.0 - c * step
-                x_min = x_max - step
+        self._draw_face_stickers("B", z, step, m, draw_quad, highlight)
 
-                color = self.model.state["B"][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                v0 = (x_min + m, y_min + m, z)
-                v1 = (x_max - m, y_min + m, z)
-                v2 = (x_max - m, y_max - m, z)
-                v3 = (x_min + m, y_max - m, z)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-        # -------- RIGHT (R) : x = +1 + offset (col -> z)
+        # RIGHT (R)
         x = 1.0 + self.sticker_offset
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                z_min = -1.0 + c * step
-                z_max = z_min + step
+        self._draw_side_face_stickers("R", x, step, m, draw_quad, highlight)
 
-                color = self.model.state["R"][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                v0 = (x, y_min + m, z_min + m)
-                v1 = (x, y_min + m, z_max - m)
-                v2 = (x, y_max - m, z_max - m)
-                v3 = (x, y_max - m, z_min + m)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-        # -------- LEFT (L) : x = -1 - offset (col -> z invertida)
+        # LEFT (L)
         x = -1.0 - self.sticker_offset
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                # flip z para mantener orientación al mirar desde fuera
-                z_max = 1.0 - c * step
-                z_min = z_max - step
+        self._draw_side_face_stickers("L", x, step, m, draw_quad, highlight)
 
-                color = self.model.state["L"][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                v0 = (x, y_min + m, z_min + m)
-                v1 = (x, y_min + m, z_max - m)
-                v2 = (x, y_max - m, z_max - m)
-                v3 = (x, y_max - m, z_min + m)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-        # -------- UP (U) : y = +1 + offset (row -> z)
+        # UP (U)
         y = 1.0 + self.sticker_offset
-        for r in range(3):
-            z_min = -1.0 + r * step
-            z_max = z_min + step
-            for c in range(3):
-                x_min = -1.0 + c * step
-                x_max = x_min + step
+        self._draw_up_down_face_stickers("U", y, step, m, draw_quad, highlight)
 
-                color = self.model.state["U"][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                v0 = (x_min + m, y, z_min + m)
-                v1 = (x_max - m, y, z_min + m)
-                v2 = (x_max - m, y, z_max - m)
-                v3 = (x_min + m, y, z_max - m)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-        # -------- DOWN (D) : y = -1 - offset (row -> z invertida)
+        # DOWN (D)
         y = -1.0 - self.sticker_offset
-        for r in range(3):
-            # flip z para orientación del D al mirarlo desde abajo
-            z_max = 1.0 - r * step
-            z_min = z_max - step
-            for c in range(3):
-                x_min = -1.0 + c * step
-                x_max = x_min + step
-
-                color = self.model.state["D"][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                v0 = (x_min + m, y, z_min + m)
-                v1 = (x_max - m, y, z_min + m)
-                v2 = (x_max - m, y, z_max - m)
-                v3 = (x_min + m, y, z_max - m)
-                draw_quad(v0, v1, v2, v3, rgb)
+        self._draw_up_down_face_stickers("D", y, step, m, draw_quad, highlight)
 
         glEnd()
 
+    def _draw_all_stickers_pick(self):
+        """
+        Dibuja stickers pero con color único por sticker.
+        Retorna dict: pick_id -> (face, r, c)
+        """
+        step = 2.0 / 3.0
+        m = self.sticker_margin + 0.03
+
+        mapping = {}
+        pick_id = 1
+
+        def draw_quad(v0, v1, v2, v3, rgb):
+            glColor3f(*rgb)
+            glVertex3f(*v0)
+            glVertex3f(*v1)
+            glVertex3f(*v2)
+            glVertex3f(*v3)
+
+        glBegin(GL_QUADS)
+
+        # F
+        z = 1.0 + self.sticker_offset
+        pick_id = self._draw_face_pick("F", z, step, m, draw_quad, mapping, pick_id)
+
+        # B
+        z = -1.0 - self.sticker_offset
+        pick_id = self._draw_face_pick("B", z, step, m, draw_quad, mapping, pick_id)
+
+        # R
+        x = 1.0 + self.sticker_offset
+        pick_id = self._draw_side_face_pick("R", x, step, m, draw_quad, mapping, pick_id)
+
+        # L
+        x = -1.0 - self.sticker_offset
+        pick_id = self._draw_side_face_pick("L", x, step, m, draw_quad, mapping, pick_id)
+
+        # U
+        y = 1.0 + self.sticker_offset
+        pick_id = self._draw_up_down_face_pick("U", y, step, m, draw_quad, mapping, pick_id)
+
+        # D
+        y = -1.0 - self.sticker_offset
+        pick_id = self._draw_up_down_face_pick("D", y, step, m, draw_quad, mapping, pick_id)
+
+        glEnd()
+
+        return mapping
+
+    # ---------- helpers dibujo caras ----------
+    def _draw_face_stickers(self, face, z, step, m, draw_quad, highlight):
+        # F normal; B con flip X (como ya tenías)
+        for r in range(3):
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            for c in range(3):
+                if face == "B":
+                    x_max = 1.0 - c * step
+                    x_min = x_max - step
+                else:
+                    x_min = -1.0 + c * step
+                    x_max = x_min + step
+
+                color = self.model.state[face][r * 3 + c]
+                rgb = self._color_rgb(color)
+
+                # highlight: dibuja un “marco” (quad más grande) antes del sticker
+                if highlight and highlight == (face, r, c):
+                    hb = (1.0, 1.0, 0.2)  # amarillo suave
+                    hm = m * 0.35
+                    v0 = (x_min + hm, y_min + hm, z)
+                    v1 = (x_max - hm, y_min + hm, z)
+                    v2 = (x_max - hm, y_max - hm, z)
+                    v3 = (x_min + hm, y_max - hm, z)
+                    draw_quad(v0, v1, v2, v3, hb)
+
+                v0 = (x_min + m, y_min + m, z)
+                v1 = (x_max - m, y_min + m, z)
+                v2 = (x_max - m, y_max - m, z)
+                v3 = (x_min + m, y_max - m, z)
+                draw_quad(v0, v1, v2, v3, rgb)
+
+    def _draw_side_face_stickers(self, face, x, step, m, draw_quad, highlight):
+        for r in range(3):
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            for c in range(3):
+                if face == "L":
+                    z_max = 1.0 - c * step
+                    z_min = z_max - step
+                else:
+                    z_min = -1.0 + c * step
+                    z_max = z_min + step
+
+                color = self.model.state[face][r * 3 + c]
+                rgb = self._color_rgb(color)
+
+                if highlight and highlight == (face, r, c):
+                    hb = (1.0, 1.0, 0.2)
+                    hm = m * 0.35
+                    v0 = (x, y_min + hm, z_min + hm)
+                    v1 = (x, y_min + hm, z_max - hm)
+                    v2 = (x, y_max - hm, z_max - hm)
+                    v3 = (x, y_max - hm, z_min + hm)
+                    draw_quad(v0, v1, v2, v3, hb)
+
+                v0 = (x, y_min + m, z_min + m)
+                v1 = (x, y_min + m, z_max - m)
+                v2 = (x, y_max - m, z_max - m)
+                v3 = (x, y_max - m, z_min + m)
+                draw_quad(v0, v1, v2, v3, rgb)
+
+    def _draw_up_down_face_stickers(self, face, y, step, m, draw_quad, highlight):
+        for r in range(3):
+            if face == "D":
+                z_max = 1.0 - r * step
+                z_min = z_max - step
+            else:
+                z_min = -1.0 + r * step
+                z_max = z_min + step
+
+            for c in range(3):
+                x_min = -1.0 + c * step
+                x_max = x_min + step
+
+                color = self.model.state[face][r * 3 + c]
+                rgb = self._color_rgb(color)
+
+                if highlight and highlight == (face, r, c):
+                    hb = (1.0, 1.0, 0.2)
+                    hm = m * 0.35
+                    v0 = (x_min + hm, y, z_min + hm)
+                    v1 = (x_max - hm, y, z_min + hm)
+                    v2 = (x_max - hm, y, z_max - hm)
+                    v3 = (x_min + hm, y, z_max - hm)
+                    draw_quad(v0, v1, v2, v3, hb)
+
+                v0 = (x_min + m, y, z_min + m)
+                v1 = (x_max - m, y, z_min + m)
+                v2 = (x_max - m, y, z_max - m)
+                v3 = (x_min + m, y, z_max - m)
+                draw_quad(v0, v1, v2, v3, rgb)
+
+    # ---------- helpers picking ----------
+    def _draw_face_pick(self, face, z, step, m, draw_quad, mapping, pick_id):
+        for r in range(3):
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            for c in range(3):
+                if face == "B":
+                    x_max = 1.0 - c * step
+                    x_min = x_max - step
+                else:
+                    x_min = -1.0 + c * step
+                    x_max = x_min + step
+
+                mapping[pick_id] = (face, r, c)
+                rgb = self._encode_id_color(pick_id)
+
+                v0 = (x_min + m, y_min + m, z)
+                v1 = (x_max - m, y_min + m, z)
+                v2 = (x_max - m, y_max - m, z)
+                v3 = (x_min + m, y_max - m, z)
+                draw_quad(v0, v1, v2, v3, rgb)
+                pick_id += 1
+        return pick_id
+
+    def _draw_side_face_pick(self, face, x, step, m, draw_quad, mapping, pick_id):
+        for r in range(3):
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            for c in range(3):
+                if face == "L":
+                    z_max = 1.0 - c * step
+                    z_min = z_max - step
+                else:
+                    z_min = -1.0 + c * step
+                    z_max = z_min + step
+
+                mapping[pick_id] = (face, r, c)
+                rgb = self._encode_id_color(pick_id)
+
+                v0 = (x, y_min + m, z_min + m)
+                v1 = (x, y_min + m, z_max - m)
+                v2 = (x, y_max - m, z_max - m)
+                v3 = (x, y_max - m, z_min + m)
+                draw_quad(v0, v1, v2, v3, rgb)
+                pick_id += 1
+        return pick_id
+
+    def _draw_up_down_face_pick(self, face, y, step, m, draw_quad, mapping, pick_id):
+        for r in range(3):
+            if face == "D":
+                z_max = 1.0 - r * step
+                z_min = z_max - step
+            else:
+                z_min = -1.0 + r * step
+                z_max = z_min + step
+
+            for c in range(3):
+                x_min = -1.0 + c * step
+                x_max = x_min + step
+
+                mapping[pick_id] = (face, r, c)
+                rgb = self._encode_id_color(pick_id)
+
+                v0 = (x_min + m, y, z_min + m)
+                v1 = (x_max - m, y, z_min + m)
+                v2 = (x_max - m, y, z_max - m)
+                v3 = (x_min + m, y, z_max - m)
+                draw_quad(v0, v1, v2, v3, rgb)
+                pick_id += 1
+        return pick_id
+
+    # --------------------------
+    # Color map
+    # --------------------------
     def _color_rgb(self, c: str):
-        """
-        Mapea los colores del CubeModel a RGB.
-        """
         palette = {
-            "W": (1.0, 1.0, 1.0),   # White
-            "Y": (1.0, 1.0, 0.0),   # Yellow
-            "O": (1.0, 0.5, 0.0),   # Orange
-            "R": (1.0, 0.0, 0.0),   # Red
-            "G": (0.0, 0.85, 0.0),  # Green
-            "B": (0.0, 0.35, 1.0),  # Blue
+            "W": (1.0, 1.0, 1.0),
+            "Y": (1.0, 1.0, 0.0),
+            "O": (1.0, 0.5, 0.0),
+            "R": (1.0, 0.0, 0.0),
+            "G": (0.0, 0.85, 0.0),
+            "B": (0.0, 0.35, 1.0),
         }
-        return palette.get(c, (0.8, 0.8, 0.8))  # gris si aparece algo raro
+        return palette.get(c, (0.8, 0.8, 0.8))

@@ -11,10 +11,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Rubik 3D Simulator (PySide6)")
         self.resize(1100, 750)
         
-
         self.model = CubeModel()
         self.gl_widget = CubeGLWidget(self.model, self)
         self.setCentralWidget(self.gl_widget)
+        
+        self.statusBar().showMessage("Listo. Click izquierdo para seleccionar sticker. Click derecho para rotar.", 5000)
+
         # mini prueba de rotacion
         #self.model.apply_sequence("R")  
         #self.gl_widget.update()
