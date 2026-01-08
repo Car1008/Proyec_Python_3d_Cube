@@ -47,6 +47,11 @@ class CubeGLWidget(QOpenGLWidget):
 
         # Selección (face, r, c)
         self.selected = None
+        
+        self._dragging_left = False
+        self._drag_start = QPoint()
+        self._drag_hit = None  # (face, r, c)
+        self._drag_threshold = 10  # pixeles
 
         self.setFocusPolicy(Qt.ClickFocus)
 
@@ -108,11 +113,26 @@ class CubeGLWidget(QOpenGLWidget):
         if event.button() == Qt.LeftButton:
             hit = self.pick_sticker(event.pos().x(), event.pos().y())
             self.selected = hit
+            self._dragging_left = True
+            self._drag_start = event.pos()
+            self._drag_hit = hit
+
             if hit:
                 face, r, c = hit
                 msg = f"Seleccionado: {face} (fila={r}, col={c})"
             else:
                 msg = "Sin selección (clic fuera de stickers)."
+
+            w = self.window()
+            if hasattr(w, "statusBar") and w.statusBar():
+                w.statusBar().showMessage(msg, 2000)
+            else:
+                print(msg)
+
+            self.update()
+            event.accept()
+            return
+
 
             # Mostrar en status bar si existe
             w = self.window()
@@ -141,13 +161,49 @@ class CubeGLWidget(QOpenGLWidget):
             self.update()
             event.accept()
             return
+        # Drag izquierdo: aplicar un movimiento cuando supere umbral
+        if self._dragging_left and (event.buttons() & Qt.LeftButton):
+            if not self._drag_hit:
+                return
+
+            dx = event.position().x() - self._drag_start.x()
+            dy = event.position().y() - self._drag_start.y()
+
+            if abs(dx) < self._drag_threshold and abs(dy) < self._drag_threshold:
+                return
+
+            face, r, c = self._drag_hit
+            move = self._decide_move_from_drag(face, dx, dy)
+
+            if move:
+                self.model.apply_move(move)
+                self.update()
+
+                # feedback
+                w = self.window()
+                if hasattr(w, "statusBar") and w.statusBar():
+                    w.statusBar().showMessage(f"Move: {move}", 1500)
+                else:
+                    print("Move:", move)
+
+            # terminar drag (un movimiento por drag)
+            self._dragging_left = False
+            self._drag_hit = None
+            return
+
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.RightButton and self._orbiting:
             self._orbiting = False
             event.accept()
+            
+        if event.button() == Qt.LeftButton and self._dragging_left:
+            self._dragging_left = False
+            self._drag_hit = None
+            event.accept()
             return
+
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
@@ -530,3 +586,53 @@ class CubeGLWidget(QOpenGLWidget):
             "B": (0.0, 0.35, 1.0),
         }
         return palette.get(c, (0.8, 0.8, 0.8))
+    def _decide_move_from_drag(self, face, dx, dy):
+        """
+        Versión 1: usa la dirección del drag + cara para decidir un movimiento básico.
+        No usa fila/columna todavía.
+
+        dx>0 = drag hacia la derecha
+        dy>0 = drag hacia abajo
+        """
+        horizontal = abs(dx) >= abs(dy)
+
+        # Mapeo simple (lo ajustamos si quieres “sensación” distinta)
+        if face == "F":
+            if horizontal:
+                return "U" if dx > 0 else "U'"
+            else:
+                return "R" if dy > 0 else "R'"
+
+        if face == "B":
+            if horizontal:
+                return "U'" if dx > 0 else "U"
+            else:
+                return "L" if dy > 0 else "L'"
+
+        if face == "U":
+            if horizontal:
+                return "F" if dx > 0 else "F'"
+            else:
+                return "R'" if dy > 0 else "R"
+
+        if face == "D":
+            if horizontal:
+                return "F'" if dx > 0 else "F"
+            else:
+                return "R" if dy > 0 else "R'"
+
+        if face == "R":
+            if horizontal:
+                return "U'" if dx > 0 else "U"
+            else:
+                return "F" if dy > 0 else "F'"
+
+        if face == "L":
+            if horizontal:
+                return "U" if dx > 0 else "U'"
+            else:
+                return "F'" if dy > 0 else "F"
+
+        return None
+
+
