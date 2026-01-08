@@ -153,7 +153,30 @@ class CubeModel:
         L[0:3] = b_top
 
     def _move_D(self):
-        raise NotImplementedError("D aún no implementado")
+        # Rotar cara D clockwise
+        self.state["D"] = self._rotate_face_cw(self.state["D"])
+
+        # Ciclo de bordes inferiores: F -> L -> B -> R -> F (fila inferior)
+        # (equivalente a U pero en la parte de abajo, ojo con el sentido)
+        F = self.state["F"]
+        R = self.state["R"]
+        B = self.state["B"]
+        L = self.state["L"]
+
+        f_bot = F[6:9]
+        r_bot = R[6:9]
+        b_bot = B[6:9]
+        l_bot = L[6:9]
+
+        # F bottom <- R bottom
+        F[6:9] = r_bot
+        # L bottom <- F bottom (old)
+        L[6:9] = f_bot
+        # B bottom <- L bottom (old)
+        B[6:9] = l_bot
+        # R bottom <- B bottom (old)
+        R[6:9] = b_bot
+
 
     def _move_L(self):
         raise NotImplementedError("L aún no implementado")
