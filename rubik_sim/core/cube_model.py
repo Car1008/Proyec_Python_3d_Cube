@@ -240,7 +240,42 @@ class CubeModel:
 
 
     def _move_F(self):
-        raise NotImplementedError("F aún no implementado")
+        # Rotar cara F clockwise
+        self.state["F"] = self._rotate_face_cw(self.state["F"])
+
+        # Afecta: U fila 2, R col 0, D fila 0, L col 2
+        u = self._get_row("U", 2)
+        r = self._get_col("R", 0)
+        d = self._get_row("D", 0)
+        l = self._get_col("L", 2)
+
+        # Convención estándar (con inversiones necesarias)
+        # U row2 <- L col2 (reversa)
+        self._set_row("U", 2, l[::-1])
+        # R col0 <- U row2 (old)
+        self._set_col("R", 0, u)
+        # D row0 <- R col0 (old) (reversa)
+        self._set_row("D", 0, r[::-1])
+        # L col2 <- D row0 (old)
+        self._set_col("L", 2, d)
+
 
     def _move_B(self):
-        raise NotImplementedError("B aún no implementado")
+        # Rotar cara B clockwise
+        self.state["B"] = self._rotate_face_cw(self.state["B"])
+
+        # Afecta: U fila 0, R col 2, D fila 2, L col 0
+        u = self._get_row("U", 0)
+        r = self._get_col("R", 2)
+        d = self._get_row("D", 2)
+        l = self._get_col("L", 0)
+
+        # Convención estándar (con inversiones)
+        # U row0 <- R col2
+        self._set_row("U", 0, r)
+        # L col0 <- U row0 (old) (reversa)
+        self._set_col("L", 0, u[::-1])
+        # D row2 <- L col0 (old)
+        self._set_row("D", 2, l)
+        # R col2 <- D row2 (old) (reversa)
+        self._set_col("R", 2, d[::-1])

@@ -65,6 +65,19 @@ class TestCubeModel(unittest.TestCase):
         for color in ["W", "Y", "O", "R", "G", "B"]:
             self.assertEqual(flat.count(color), 9)
 
+    def test_F_then_Fprime_returns(self):
+        c = CubeModel()
+        before = c.to_hashable()
+        c.apply_move("F")
+        c.apply_move("F'")
+        self.assertEqual(before, c.to_hashable())
+
+    def test_B_then_Bprime_returns(self):
+        c = CubeModel()
+        before = c.to_hashable()
+        c.apply_move("B")
+        c.apply_move("B'")
+        self.assertEqual(before, c.to_hashable())
 
 if __name__ == "__main__":
     unittest.main()
