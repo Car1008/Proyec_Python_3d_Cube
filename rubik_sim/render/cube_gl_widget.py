@@ -40,8 +40,9 @@ class CubeGLWidget(QOpenGLWidget):
         self._orbiting = False
 
         # Stickers
-        self.sticker_margin = 0.06
+        self.sticker_margin = 0.04
         self.sticker_offset = 0.01
+
 
         # Selección
         self.selected = None
@@ -99,7 +100,8 @@ class CubeGLWidget(QOpenGLWidget):
 
         self._apply_camera()
 
-        self._draw_plastic_cube()
+        # self._draw_plastic_cube()  # desactivado: se reemplaza por plástico por sticker
+
 
         # Stickers: primero NO animados, luego animados encima
         self._draw_stickers_pass(animated_only=False)
@@ -425,13 +427,16 @@ class CubeGLWidget(QOpenGLWidget):
         idx = {"x": 0, "y": 1, "z": 2}[self.anim_axis]
         return int(round(p[idx])) == self.anim_layer
 
-    def _sticker_quad(self, face, r, c, margin):
+    def _sticker_quad(self, face, r, c, margin, offset=None):
+        off = self.sticker_offset if offset is None else offset
+
+
         step = 2.0 / 3.0
         m = margin
 
         # Rangos base por cara (mismo criterio que tu render original)
         if face == "F":
-            z = 1.0 + self.sticker_offset
+            z = 1.0 + off 
             x_min = -1.0 + c * step
             x_max = x_min + step
             y_max = 1.0 - r * step
@@ -444,7 +449,7 @@ class CubeGLWidget(QOpenGLWidget):
             ]
 
         if face == "B":
-            z = -1.0 - self.sticker_offset
+            z = -1.0 - off
             x_max = 1.0 - c * step
             x_min = x_max - step
             y_max = 1.0 - r * step
@@ -457,7 +462,7 @@ class CubeGLWidget(QOpenGLWidget):
             ]
 
         if face == "R":
-            x = 1.0 + self.sticker_offset
+            x = 1.0 + off
             z_min = -1.0 + c * step
             z_max = z_min + step
             y_max = 1.0 - r * step
@@ -470,7 +475,7 @@ class CubeGLWidget(QOpenGLWidget):
             ]
 
         if face == "L":
-            x = -1.0 - self.sticker_offset
+            x = -1.0 - off
             z_max = 1.0 - c * step
             z_min = z_max - step
             y_max = 1.0 - r * step
@@ -483,7 +488,7 @@ class CubeGLWidget(QOpenGLWidget):
             ]
 
         if face == "U":
-            y = 1.0 + self.sticker_offset
+            y = 1.0 + off
             z_min = -1.0 + r * step
             z_max = z_min + step
             x_min = -1.0 + c * step
@@ -496,7 +501,7 @@ class CubeGLWidget(QOpenGLWidget):
             ]
 
         if face == "D":
-            y = -1.0 - self.sticker_offset
+            y = -1.0 - off
             z_max = 1.0 - r * step
             z_min = z_max - step
             x_min = -1.0 + c * step
@@ -537,6 +542,20 @@ class CubeGLWidget(QOpenGLWidget):
                         glColor3f(*hb)
                         for v in quad_h:
                             glVertex3f(*v)
+
+                    # --- Base "plástico" detrás del sticker (se anima también) ---
+                    plastic = (0.05, 0.05, 0.06)
+
+                    # Un poco más grande que el sticker (menos margen) y un poco más atrás (offset menor)
+                    quad_bg = self._sticker_quad(face, r, c, margin=0.02, offset=self.sticker_offset * 0.55)
+
+                    if self.animating and in_layer:
+                        ang = self.anim_sign * self.anim_angle
+                        quad_bg = [self._rot_point(v, self.anim_axis, ang) for v in quad_bg]
+
+                    glColor3f(*plastic)
+                    for v in quad_bg:
+                        glVertex3f(*v)
 
                     # Sticker normal
                     quad = self._sticker_quad(face, r, c, self.sticker_margin)
