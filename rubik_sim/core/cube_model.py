@@ -106,6 +106,24 @@ class CubeModel:
         tokens = [t for t in seq.split() if t.strip()]
         for t in tokens:
             self.apply_move(t)
+    def _get_col(self, face, col):
+        s = self.state[face]
+        return [s[col], s[col + 3], s[col + 6]]
+
+    def _set_col(self, face, col, values):
+        s = self.state[face]
+        s[col], s[col + 3], s[col + 6] = values[0], values[1], values[2]
+
+    def _get_row(self, face, row):
+        s = self.state[face]
+        i = row * 3
+        return [s[i], s[i + 1], s[i + 2]]
+
+    def _set_row(self, face, row, values):
+        s = self.state[face]
+        i = row * 3
+        s[i], s[i + 1], s[i + 2] = values[0], values[1], values[2]
+
 
     def _apply_base_move_cw(self, base: str):
         """
@@ -178,11 +196,48 @@ class CubeModel:
         R[6:9] = b_bot
 
 
-    def _move_L(self):
-        raise NotImplementedError("L aún no implementado")
-
     def _move_R(self):
-        raise NotImplementedError("R aún no implementado")
+        # Rotar cara R clockwise
+        self.state["R"] = self._rotate_face_cw(self.state["R"])
+
+        # Columnas afectadas:
+        # U col 2, F col 2, D col 2, B col 0 (pero B va invertida)
+        u = self._get_col("U", 2)
+        f = self._get_col("F", 2)
+        d = self._get_col("D", 2)
+        b = self._get_col("B", 0)[::-1]  # invertir
+
+        # Ciclo (convención estándar):
+        # U <- F
+        self._set_col("U", 2, f)
+        # F <- D
+        self._set_col("F", 2, d)
+        # D <- B (invertido ya)
+        self._set_col("D", 2, b)
+        # B <- U (pero al guardar en B col 0, se invierte)
+        self._set_col("B", 0, u[::-1])
+
+
+    def _move_L(self):
+        # Rotar cara L clockwise
+        self.state["L"] = self._rotate_face_cw(self.state["L"])
+
+        # U col 0, F col 0, D col 0, B col 2 (B invertida)
+        u = self._get_col("U", 0)
+        f = self._get_col("F", 0)
+        d = self._get_col("D", 0)
+        b = self._get_col("B", 2)[::-1]  # invertir
+
+        # Ciclo:
+        # U <- B (invertido)
+        self._set_col("U", 0, b)
+        # F <- U
+        self._set_col("F", 0, u)
+        # D <- F
+        self._set_col("D", 0, f)
+        # B <- D (invertir al guardar)
+        self._set_col("B", 2, d[::-1])
+
 
     def _move_F(self):
         raise NotImplementedError("F aún no implementado")
