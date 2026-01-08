@@ -1,6 +1,7 @@
 # rubik_sim/render/cube_gl_widget.py
 import math
-from PySide6.QtCore import Qt, QPoint
+
+from PySide6.QtCore import Qt, QPoint, QTimer
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from OpenGL.GL import (
@@ -16,23 +17,18 @@ from OpenGL.GL import (
 from OpenGL.GLU import gluPerspective
 
 
-# selecionar el color de highlight
-#hb = (1.0, 1.0, 0.2)  # amarillo suave
-hb = (0.10, 0.95, 0.85)  # calipso / turquesa
-
-
-
 class CubeGLWidget(QOpenGLWidget):
     """
-    Render 3D (OpenGL clásico) + stickers 3x3 + picking por color.
-    - Left click: selecciona sticker (cara, fila, columna)
-    - Right drag: orbit
-    - Wheel: zoom
+    Rubik render OpenGL clásico (sin shaders):
+    - Cubo plástico + stickers 3x3
+    - Picking por color (HiDPI OK)
+    - Highlight
+    - Drag (cámara-aware) => movimiento por capa (incluye E/M/S)
+    - Animación suave con QTimer
     """
 
     def __init__(self, model, parent=None):
         super().__init__(parent)
-
         self.model = model
 
         # Cámara / orbit
@@ -47,13 +43,29 @@ class CubeGLWidget(QOpenGLWidget):
         self.sticker_margin = 0.06
         self.sticker_offset = 0.01
 
-        # Selección (face, r, c)
+        # Selección
         self.selected = None
-        
+
+        # Drag
         self._dragging_left = False
         self._drag_start = QPoint()
-        self._drag_hit = None  # (face, r, c)
-        self._drag_threshold = 10  # pixeles
+        self._drag_hit = None
+        self._drag_threshold = 14
+
+        # Animación
+        self.animating = False
+        self.anim_move = None
+        self.anim_axis = None      # 'x','y','z'
+        self.anim_layer = None     # -1,0,1
+        self.anim_sign = 1         # +1 o -1
+        self.anim_angle = 0.0
+        self.anim_target = 90.0
+        self.anim_step = 6.0       # deg/frame
+
+        self._move_queue = []
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(16)  # ~60fps
+        self._anim_timer.timeout.connect(self._on_anim_tick)
 
         self.setFocusPolicy(Qt.ClickFocus)
 
@@ -82,18 +94,17 @@ class CubeGLWidget(QOpenGLWidget):
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
-
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        # Cámara
         self._apply_camera()
 
-        # 1) Cubo plástico base
         self._draw_plastic_cube()
 
-        # 2) Stickers desde el modelo (con highlight si hay selección)
-        self._draw_all_stickers(highlight=self.selected)
+        # Stickers: primero NO animados, luego animados encima
+        self._draw_stickers_pass(animated_only=False)
+        if self.animating:
+            self._draw_stickers_pass(animated_only=True)
 
     def _apply_camera(self):
         glMatrixMode(GL_MODELVIEW)
@@ -123,7 +134,7 @@ class CubeGLWidget(QOpenGLWidget):
                 face, r, c = hit
                 msg = f"Seleccionado: {face} (fila={r}, col={c})"
             else:
-                msg = "Sin selección (clic fuera de stickers)."
+                msg = "Sin selección."
 
             w = self.window()
             if hasattr(w, "statusBar") and w.statusBar():
@@ -135,21 +146,10 @@ class CubeGLWidget(QOpenGLWidget):
             event.accept()
             return
 
-
-            # Mostrar en status bar si existe
-            w = self.window()
-            if hasattr(w, "statusBar") and w.statusBar():
-                w.statusBar().showMessage(msg, 3000)
-            else:
-                print(msg)
-
-            self.update()
-            event.accept()
-            return
-
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        # Orbit
         if self._orbiting:
             dx = event.position().x() - self._last_mouse_pos.x()
             dy = event.position().y() - self._last_mouse_pos.y()
@@ -163,9 +163,10 @@ class CubeGLWidget(QOpenGLWidget):
             self.update()
             event.accept()
             return
-        # Drag izquierdo: aplicar un movimiento cuando supere umbral
+
+        # Drag izquierdo => movimiento (con animación)
         if self._dragging_left and (event.buttons() & Qt.LeftButton):
-            if not self._drag_hit:
+            if not self._drag_hit or self.animating:
                 return
 
             dx = event.position().x() - self._drag_start.x()
@@ -177,20 +178,15 @@ class CubeGLWidget(QOpenGLWidget):
             face, r, c = self._drag_hit
             move = self._decide_move_from_drag(face, r, c, dx, dy)
 
-
-
             if move:
-                self.model.apply_move(move)
-                self.update()
+                self.start_move_animation(move)
 
-                # feedback
                 w = self.window()
                 if hasattr(w, "statusBar") and w.statusBar():
-                    w.statusBar().showMessage(f"Move: {move}", 1500)
+                    w.statusBar().showMessage(f"Move: {move}", 1200)
                 else:
                     print("Move:", move)
 
-            # terminar drag (un movimiento por drag)
             self._dragging_left = False
             self._drag_hit = None
             return
@@ -201,7 +197,8 @@ class CubeGLWidget(QOpenGLWidget):
         if event.button() == Qt.RightButton and self._orbiting:
             self._orbiting = False
             event.accept()
-            
+            return
+
         if event.button() == Qt.LeftButton and self._dragging_left:
             self._dragging_left = False
             self._drag_hit = None
@@ -221,26 +218,20 @@ class CubeGLWidget(QOpenGLWidget):
     # Picking (color picking)
     # --------------------------
     def pick_sticker(self, x, y):
-        dpr = self.devicePixelRatioF()
+        if self.animating:
+            return None
 
-        # coords en framebuffer real
+        dpr = self.devicePixelRatioF()
         gl_x = int(x * dpr)
         gl_y = int((self.height() - y - 1) * dpr)
 
         self.makeCurrent()
 
-        # (opcional) desactivar multisample si existe
-        try:
-            from OpenGL.GL import glDisable, GL_MULTISAMPLE
-            glDisable(GL_MULTISAMPLE)
-        except Exception:
-            pass
-
         glDisable(GL_DITHER)
         glDisable(GL_BLEND)
 
-        # Render pass picking
-        glClearColor(0.0, 0.0, 0.0, 1.0)  # id=0 fondo
+        # pass picking
+        glClearColor(0.0, 0.0, 0.0, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         self._apply_camera()
@@ -250,14 +241,15 @@ class CubeGLWidget(QOpenGLWidget):
 
         pixel = glReadPixels(gl_x, gl_y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE)
 
-        # pixel puede venir como bytes o array
+        # restaurar clear color “normal”
+        glClearColor(0.10, 0.10, 0.12, 1.0)
+
         if pixel is None:
             return None
 
         if isinstance(pixel, (bytes, bytearray)):
             r, g, b = pixel[0], pixel[1], pixel[2]
         else:
-            # a veces retorna array-like
             try:
                 r, g, b = int(pixel[0]), int(pixel[1]), int(pixel[2])
             except Exception:
@@ -266,24 +258,99 @@ class CubeGLWidget(QOpenGLWidget):
         pick_id = r + (g << 8) + (b << 16)
         return mapping.get(pick_id, None)
 
-
     def _encode_id_color(self, pick_id: int):
-        """
-        Convierte un ID (1..54) a un color RGB (0..1) para picking.
-        """
         r = (pick_id & 0xFF) / 255.0
         g = ((pick_id >> 8) & 0xFF) / 255.0
         b = ((pick_id >> 16) & 0xFF) / 255.0
         return (r, g, b)
 
     # --------------------------
-    # Dibujos
+    # Animación
+    # --------------------------
+    def _move_to_params(self, move: str):
+        base = move[0].upper()
+        table = {
+            "U": ("y",  1, +1),
+            "D": ("y", -1, -1),
+            "R": ("x",  1, -1),
+            "L": ("x", -1, +1),
+            "F": ("z",  1, -1),
+            "B": ("z", -1, +1),
+            "M": ("x",  0, +1),
+            "E": ("y",  0, -1),
+            "S": ("z",  0, -1),
+        }
+        return table[base]
+
+    def _parse_move_for_anim(self, move: str):
+        axis, layer, sign_base = self._move_to_params(move)
+        suffix = move[1:] if len(move) > 1 else ""
+
+        sign = sign_base
+        target = 90.0
+
+        if suffix == "":
+            pass
+        elif suffix == "'":
+            sign *= -1
+        elif suffix == "2":
+            target = 180.0
+        else:
+            raise ValueError(f"Sufijo no soportado: {move}")
+
+        return axis, layer, sign, target, move
+
+    def start_move_animation(self, move: str):
+        if self.animating:
+            self._move_queue.append(move)
+            return
+
+        self.anim_axis, self.anim_layer, self.anim_sign, self.anim_target, self.anim_move = self._parse_move_for_anim(move)
+        self.anim_angle = 0.0
+        self.animating = True
+        self._anim_timer.start()
+
+    def _on_anim_tick(self):
+        if not self.animating:
+            self._anim_timer.stop()
+            return
+
+        self.anim_angle += self.anim_step
+        if self.anim_angle >= self.anim_target:
+            self.anim_angle = self.anim_target
+            self._finish_move_animation()
+            return
+
+        self.update()
+
+    def _finish_move_animation(self):
+        move = self.anim_move
+
+        self.animating = False
+        self._anim_timer.stop()
+
+        self.anim_axis = None
+        self.anim_layer = None
+        self.anim_sign = 1
+        self.anim_angle = 0.0
+        self.anim_target = 90.0
+        self.anim_move = None
+
+        self.model.apply_move(move)
+        self.update()
+
+        if self._move_queue:
+            nxt = self._move_queue.pop(0)
+            self.start_move_animation(nxt)
+
+    # --------------------------
+    # Render helpers
     # --------------------------
     def _draw_plastic_cube(self):
         plastic = (0.05, 0.05, 0.06)
         glBegin(GL_QUADS)
-
         glColor3f(*plastic)
+
         # Front z=+1
         glVertex3f(-1, -1,  1)
         glVertex3f( 1, -1,  1)
@@ -319,283 +386,198 @@ class CubeGLWidget(QOpenGLWidget):
         glVertex3f( 1, -1,  1)
         glVertex3f( 1, -1, -1)
         glVertex3f(-1, -1, -1)
-    
+
         glEnd()
 
-    def _draw_all_stickers(self, highlight=None):
-        """
-        Dibuja stickers con colores del modelo.
-        highlight: (face, r, c) o None
-        """
-        step = 2.0 / 3.0
-        m = self.sticker_margin
+    def _rot_point(self, p, axis, angle_deg):
+        x, y, z = p
+        a = math.radians(angle_deg)
+        c = math.cos(a)
+        s = math.sin(a)
 
-        def draw_quad(v0, v1, v2, v3, rgb):
-            glColor3f(*rgb)
-            glVertex3f(*v0)
-            glVertex3f(*v1)
-            glVertex3f(*v2)
-            glVertex3f(*v3)
+        if axis == "x":
+            return (x, y*c - z*s, y*s + z*c)
+        if axis == "y":
+            return (x*c + z*s, y, -x*s + z*c)
+        if axis == "z":
+            return (x*c - y*s, x*s + y*c, z)
+        return p
+
+    def _sticker_center(self, face, r, c):
+        if face == "F":
+            return (c-1, 1-r, 1)
+        if face == "B":
+            return (1-c, 1-r, -1)
+        if face == "R":
+            return (1, 1-r, c-1)
+        if face == "L":
+            return (-1, 1-r, 1-c)
+        if face == "U":
+            return (c-1, 1, r-1)
+        if face == "D":
+            return (c-1, -1, 1-r)
+        return (0, 0, 0)
+
+    def _is_in_anim_layer(self, face, r, c):
+        if not self.animating:
+            return False
+        p = self._sticker_center(face, r, c)
+        idx = {"x": 0, "y": 1, "z": 2}[self.anim_axis]
+        return int(round(p[idx])) == self.anim_layer
+
+    def _sticker_quad(self, face, r, c, margin):
+        step = 2.0 / 3.0
+        m = margin
+
+        # Rangos base por cara (mismo criterio que tu render original)
+        if face == "F":
+            z = 1.0 + self.sticker_offset
+            x_min = -1.0 + c * step
+            x_max = x_min + step
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            return [
+                (x_min + m, y_min + m, z),
+                (x_max - m, y_min + m, z),
+                (x_max - m, y_max - m, z),
+                (x_min + m, y_max - m, z),
+            ]
+
+        if face == "B":
+            z = -1.0 - self.sticker_offset
+            x_max = 1.0 - c * step
+            x_min = x_max - step
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            return [
+                (x_min + m, y_min + m, z),
+                (x_max - m, y_min + m, z),
+                (x_max - m, y_max - m, z),
+                (x_min + m, y_max - m, z),
+            ]
+
+        if face == "R":
+            x = 1.0 + self.sticker_offset
+            z_min = -1.0 + c * step
+            z_max = z_min + step
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            return [
+                (x, y_min + m, z_min + m),
+                (x, y_min + m, z_max - m),
+                (x, y_max - m, z_max - m),
+                (x, y_max - m, z_min + m),
+            ]
+
+        if face == "L":
+            x = -1.0 - self.sticker_offset
+            z_max = 1.0 - c * step
+            z_min = z_max - step
+            y_max = 1.0 - r * step
+            y_min = y_max - step
+            return [
+                (x, y_min + m, z_min + m),
+                (x, y_min + m, z_max - m),
+                (x, y_max - m, z_max - m),
+                (x, y_max - m, z_min + m),
+            ]
+
+        if face == "U":
+            y = 1.0 + self.sticker_offset
+            z_min = -1.0 + r * step
+            z_max = z_min + step
+            x_min = -1.0 + c * step
+            x_max = x_min + step
+            return [
+                (x_min + m, y, z_min + m),
+                (x_max - m, y, z_min + m),
+                (x_max - m, y, z_max - m),
+                (x_min + m, y, z_max - m),
+            ]
+
+        if face == "D":
+            y = -1.0 - self.sticker_offset
+            z_max = 1.0 - r * step
+            z_min = z_max - step
+            x_min = -1.0 + c * step
+            x_max = x_min + step
+            return [
+                (x_min + m, y, z_min + m),
+                (x_max - m, y, z_min + m),
+                (x_max - m, y, z_max - m),
+                (x_min + m, y, z_max - m),
+            ]
+
+        return [(0, 0, 0)] * 4
+
+    def _draw_stickers_pass(self, animated_only: bool):
+        faces = ["F", "B", "R", "L", "U", "D"]
 
         glBegin(GL_QUADS)
 
-        # FRONT (F)
-        z = 1.0 + self.sticker_offset
-        self._draw_face_stickers("F", z, step, m, draw_quad, highlight)
+        for face in faces:
+            for r in range(3):
+                for c in range(3):
+                    in_layer = self._is_in_anim_layer(face, r, c)
+                    if animated_only != in_layer:
+                        continue
 
-        # BACK (B)
-        z = -1.0 - self.sticker_offset
-        self._draw_face_stickers("B", z, step, m, draw_quad, highlight)
+                    # Color sticker
+                    color = self.model.state[face][r * 3 + c]
+                    rgb = self._color_rgb(color)
 
-        # RIGHT (R)
-        x = 1.0 + self.sticker_offset
-        self._draw_side_face_stickers("R", x, step, m, draw_quad, highlight)
+                    # Highlight
+                    if self.selected and self.selected == (face, r, c):
+                        hb = (0.10, 0.95, 0.85)  # calipso
+                        hm = self.sticker_margin * 0.35
+                        quad_h = self._sticker_quad(face, r, c, hm)
+                        if self.animating and in_layer:
+                            ang = self.anim_sign * self.anim_angle
+                            quad_h = [self._rot_point(v, self.anim_axis, ang) for v in quad_h]
+                        glColor3f(*hb)
+                        for v in quad_h:
+                            glVertex3f(*v)
 
-        # LEFT (L)
-        x = -1.0 - self.sticker_offset
-        self._draw_side_face_stickers("L", x, step, m, draw_quad, highlight)
+                    # Sticker normal
+                    quad = self._sticker_quad(face, r, c, self.sticker_margin)
+                    if self.animating and in_layer:
+                        ang = self.anim_sign * self.anim_angle
+                        quad = [self._rot_point(v, self.anim_axis, ang) for v in quad]
 
-        # UP (U)
-        y = 1.0 + self.sticker_offset
-        self._draw_up_down_face_stickers("U", y, step, m, draw_quad, highlight)
-
-        # DOWN (D)
-        y = -1.0 - self.sticker_offset
-        self._draw_up_down_face_stickers("D", y, step, m, draw_quad, highlight)
+                    glColor3f(*rgb)
+                    for v in quad:
+                        glVertex3f(*v)
 
         glEnd()
 
     def _draw_all_stickers_pick(self):
-        """
-        Dibuja stickers pero con color único por sticker.
-        Retorna dict: pick_id -> (face, r, c)
-        """
-        step = 2.0 / 3.0
-        m = self.sticker_margin + 0.03
-
         mapping = {}
         pick_id = 1
-
-        def draw_quad(v0, v1, v2, v3, rgb):
-            glColor3f(*rgb)
-            glVertex3f(*v0)
-            glVertex3f(*v1)
-            glVertex3f(*v2)
-            glVertex3f(*v3)
+        faces = ["F", "B", "R", "L", "U", "D"]
 
         glBegin(GL_QUADS)
 
-        # F
-        z = 1.0 + self.sticker_offset
-        pick_id = self._draw_face_pick("F", z, step, m, draw_quad, mapping, pick_id)
+        for face in faces:
+            for r in range(3):
+                for c in range(3):
+                    mapping[pick_id] = (face, r, c)
+                    rgb = self._encode_id_color(pick_id)
 
-        # B
-        z = -1.0 - self.sticker_offset
-        pick_id = self._draw_face_pick("B", z, step, m, draw_quad, mapping, pick_id)
+                    quad = self._sticker_quad(face, r, c, self.sticker_margin + 0.03)  # área pick más centrada
 
-        # R
-        x = 1.0 + self.sticker_offset
-        pick_id = self._draw_side_face_pick("R", x, step, m, draw_quad, mapping, pick_id)
+                    glColor3f(*rgb)
+                    for v in quad:
+                        glVertex3f(*v)
 
-        # L
-        x = -1.0 - self.sticker_offset
-        pick_id = self._draw_side_face_pick("L", x, step, m, draw_quad, mapping, pick_id)
-
-        # U
-        y = 1.0 + self.sticker_offset
-        pick_id = self._draw_up_down_face_pick("U", y, step, m, draw_quad, mapping, pick_id)
-
-        # D
-        y = -1.0 - self.sticker_offset
-        pick_id = self._draw_up_down_face_pick("D", y, step, m, draw_quad, mapping, pick_id)
+                    pick_id += 1
 
         glEnd()
-
         return mapping
 
-    # ---------- helpers dibujo caras ----------
-    def _draw_face_stickers(self, face, z, step, m, draw_quad, highlight):
-        # F normal; B con flip X (como ya tenías)
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                if face == "B":
-                    x_max = 1.0 - c * step
-                    x_min = x_max - step
-                else:
-                    x_min = -1.0 + c * step
-                    x_max = x_min + step
-
-                color = self.model.state[face][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                # highlight: dibuja un “marco” (quad más grande) antes del sticker
-                if highlight and highlight == (face, r, c):
-                    
-
-                    hm = m * 0.35
-                    v0 = (x_min + hm, y_min + hm, z)
-                    v1 = (x_max - hm, y_min + hm, z)
-                    v2 = (x_max - hm, y_max - hm, z)
-                    v3 = (x_min + hm, y_max - hm, z)
-                    draw_quad(v0, v1, v2, v3, hb)
-
-                v0 = (x_min + m, y_min + m, z)
-                v1 = (x_max - m, y_min + m, z)
-                v2 = (x_max - m, y_max - m, z)
-                v3 = (x_min + m, y_max - m, z)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-    def _draw_side_face_stickers(self, face, x, step, m, draw_quad, highlight):
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                if face == "L":
-                    z_max = 1.0 - c * step
-                    z_min = z_max - step
-                else:
-                    z_min = -1.0 + c * step
-                    z_max = z_min + step
-
-                color = self.model.state[face][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                if highlight and highlight == (face, r, c):
-                    hm = m * 0.35
-                    v0 = (x, y_min + hm, z_min + hm)
-                    v1 = (x, y_min + hm, z_max - hm)
-                    v2 = (x, y_max - hm, z_max - hm)
-                    v3 = (x, y_max - hm, z_min + hm)
-                    draw_quad(v0, v1, v2, v3, hb)
-
-                v0 = (x, y_min + m, z_min + m)
-                v1 = (x, y_min + m, z_max - m)
-                v2 = (x, y_max - m, z_max - m)
-                v3 = (x, y_max - m, z_min + m)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-    def _draw_up_down_face_stickers(self, face, y, step, m, draw_quad, highlight):
-        for r in range(3):
-            if face == "D":
-                z_max = 1.0 - r * step
-                z_min = z_max - step
-            else:
-                z_min = -1.0 + r * step
-                z_max = z_min + step
-
-            for c in range(3):
-                x_min = -1.0 + c * step
-                x_max = x_min + step
-
-                color = self.model.state[face][r * 3 + c]
-                rgb = self._color_rgb(color)
-
-                if highlight and highlight == (face, r, c):
-                    hm = m * 0.35
-                    v0 = (x_min + hm, y, z_min + hm)
-                    v1 = (x_max - hm, y, z_min + hm)
-                    v2 = (x_max - hm, y, z_max - hm)
-                    v3 = (x_min + hm, y, z_max - hm)
-                    draw_quad(v0, v1, v2, v3, hb)
-
-                v0 = (x_min + m, y, z_min + m)
-                v1 = (x_max - m, y, z_min + m)
-                v2 = (x_max - m, y, z_max - m)
-                v3 = (x_min + m, y, z_max - m)
-                draw_quad(v0, v1, v2, v3, rgb)
-
-    # ---------- helpers picking ----------
-    def _draw_face_pick(self, face, z, step, m, draw_quad, mapping, pick_id):
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                if face == "B":
-                    x_max = 1.0 - c * step
-                    x_min = x_max - step
-                else:
-                    x_min = -1.0 + c * step
-                    x_max = x_min + step
-
-                mapping[pick_id] = (face, r, c)
-                rgb = self._encode_id_color(pick_id)
-
-                v0 = (x_min + m, y_min + m, z)
-                v1 = (x_max - m, y_min + m, z)
-                v2 = (x_max - m, y_max - m, z)
-                v3 = (x_min + m, y_max - m, z)
-                draw_quad(v0, v1, v2, v3, rgb)
-                pick_id += 1
-        return pick_id
-
-    def _draw_side_face_pick(self, face, x, step, m, draw_quad, mapping, pick_id):
-        for r in range(3):
-            y_max = 1.0 - r * step
-            y_min = y_max - step
-            for c in range(3):
-                if face == "L":
-                    z_max = 1.0 - c * step
-                    z_min = z_max - step
-                else:
-                    z_min = -1.0 + c * step
-                    z_max = z_min + step
-
-                mapping[pick_id] = (face, r, c)
-                rgb = self._encode_id_color(pick_id)
-
-                v0 = (x, y_min + m, z_min + m)
-                v1 = (x, y_min + m, z_max - m)
-                v2 = (x, y_max - m, z_max - m)
-                v3 = (x, y_max - m, z_min + m)
-                draw_quad(v0, v1, v2, v3, rgb)
-                pick_id += 1
-        return pick_id
-
-    def _draw_up_down_face_pick(self, face, y, step, m, draw_quad, mapping, pick_id):
-        for r in range(3):
-            if face == "D":
-                z_max = 1.0 - r * step
-                z_min = z_max - step
-            else:
-                z_min = -1.0 + r * step
-                z_max = z_min + step
-
-            for c in range(3):
-                x_min = -1.0 + c * step
-                x_max = x_min + step
-
-                mapping[pick_id] = (face, r, c)
-                rgb = self._encode_id_color(pick_id)
-
-                v0 = (x_min + m, y, z_min + m)
-                v1 = (x_max - m, y, z_min + m)
-                v2 = (x_max - m, y, z_max - m)
-                v3 = (x_min + m, y, z_max - m)
-                draw_quad(v0, v1, v2, v3, rgb)
-                pick_id += 1
-        return pick_id
-
     # --------------------------
-    # Color map
+    # Drag => movimiento (camera-aware)
     # --------------------------
-    def _color_rgb(self, c: str):
-        palette = {
-            "W": (1.0, 1.0, 1.0),
-            "Y": (1.0, 1.0, 0.0),
-            "O": (1.0, 0.5, 0.0),
-            "R": (1.0, 0.0, 0.0),
-            "G": (0.0, 0.85, 0.0),
-            "B": (0.0, 0.35, 1.0),
-        }
-        return palette.get(c, (0.8, 0.8, 0.8))
-    
-
     def _decide_move_from_drag(self, face, r, c, dx, dy):
-        # -------------------------
-        # helpers vectoriales
-        # -------------------------
         def cross(a, b):
             return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 
@@ -614,24 +596,6 @@ class CubeGLWidget(QOpenGLWidget):
         def sgn(v):
             return 1 if v > 0 else (-1 if v < 0 else 0)
 
-        # -------------------------
-        # centro discreto del sticker (x,y,z) en {-1,0,1}
-        # (MISMO mapeo que en CubeModel y tu render)
-        # -------------------------
-        def sticker_center(face, r, c):
-            if face == "F":
-                return (c-1, 1-r, 1)
-            if face == "B":
-                return (1-c, 1-r, -1)
-            if face == "R":
-                return (1, 1-r, c-1)
-            if face == "L":
-                return (-1, 1-r, 1-c)
-            if face == "U":
-                return (c-1, 1, r-1)
-            if face == "D":
-                return (c-1, -1, 1-r)
-
         FACE_NORMAL = {
             "F": (0, 0, 1),
             "B": (0, 0, -1),
@@ -642,185 +606,79 @@ class CubeGLWidget(QOpenGLWidget):
         }
 
         n = FACE_NORMAL[face]
-        p = sticker_center(face, r, c)
+        p = self._sticker_center(face, r, c)
 
-        # -------------------------
-        # 1) drag de pantalla -> vector "mundo"
-        # derecha = +x, arriba = +y (pero en Qt dy>0 es hacia abajo)
-        # -------------------------
+        # drag en pantalla => mundo
         d_world = (dx, -dy, 0.0)
 
-        # -------------------------
-        # 2) mundo -> coordenadas del cubo
-        # (inversa de la rotación que aplicas en OpenGL)
-        # OpenGL: Rotate pitch (X) luego yaw (Y) => R = Rx(pitch)*Ry(yaw)
-        # Inversa: R^-1 = Ry(-yaw)*Rx(-pitch)
-        # -------------------------
+        # mundo -> cubo (inversa de la cámara)
         yaw = math.radians(self.yaw)
         pitch = math.radians(self.pitch)
 
-        # aplicar Rx(-pitch)
         cx = math.cos(-pitch); sx = math.sin(-pitch)
         x0, y0, z0 = d_world
         d1 = (x0, cx*y0 - sx*z0, sx*y0 + cx*z0)
 
-        # aplicar Ry(-yaw)
         cy = math.cos(-yaw); sy = math.sin(-yaw)
         x1, y1, z1 = d1
         d_cube = (cy*x1 + sy*z1, y1, -sy*x1 + cy*z1)
 
-        # -------------------------
-        # 3) proyectar el drag al plano de la cara
-        # -------------------------
+        # proyectar al plano de la cara
         d_plane = sub(d_cube, scale(n, dot(d_cube, n)))
-
         if norm(d_plane) < 1e-6:
             return None
 
-        # -------------------------
-        # 4) eje de giro: axis = n x d_plane
-        # -------------------------
         axis = cross(n, d_plane)
 
-        # elegir eje dominante x/y/z
         ax = [abs(axis[0]), abs(axis[1]), abs(axis[2])]
         i = ax.index(max(ax))
         axis_pos = "xyz"[i]
         axis_sign = sgn(axis[i])
 
-        layer = int(round(p[i]))  # -1,0,1
+        layer = int(round(p[i]))
 
-        # -------------------------
-        # 5) decidir sentido (prime/no-prime)
-        # medimos si rotación +90 alrededor del eje REAL acerca el movimiento al drag
-        # -------------------------
         axis_unit = (axis_sign, 0, 0) if axis_pos == "x" else (0, axis_sign, 0) if axis_pos == "y" else (0, 0, axis_sign)
         v = cross(axis_unit, p)
         rot_about_axis_unit = 1 if dot(v, d_plane) > 0 else -1
-        rot_about_pos = rot_about_axis_unit * axis_sign  # respecto al eje +x/+y/+z
-
-        # -------------------------
-        # 6) mapear a movimientos (misma convención que tu CubeModel geométrico)
-        # -------------------------
-        if axis_pos == "y":
-            if layer == 1:
-                return "U" if rot_about_pos == 1 else "U'"
-            if layer == 0:
-                # E es como D (y=0, -90)
-                return "E'" if rot_about_pos == 1 else "E"
-            if layer == -1:
-                # D es -90
-                return "D'" if rot_about_pos == 1 else "D"
-
-        if axis_pos == "x":
-            if layer == 1:
-                # R es -90
-                return "R'" if rot_about_pos == 1 else "R"
-            if layer == 0:
-                # M es como L (x=0, +90)
-                return "M" if rot_about_pos == 1 else "M'"
-            if layer == -1:
-                # L es +90
-                return "L" if rot_about_pos == 1 else "L'"
-
-        if axis_pos == "z":
-            if layer == 1:
-                # F es -90
-                return "F'" if rot_about_pos == 1 else "F"
-            if layer == 0:
-                # S es como F (z=0, -90)
-                return "S'" if rot_about_pos == 1 else "S"
-            if layer == -1:
-                # B es +90
-                return "B" if rot_about_pos == 1 else "B'"
-
-        return None
-
-
-        def cross(a, b):
-            return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
-
-        def dot(a, b):
-            return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
-
-        def sgn(v):
-            return 1 if v > 0 else (-1 if v < 0 else 0)
-
-        # centro discreto del sticker en coords de cubo (x,y,z en {-1,0,1})
-        def sticker_center(face, r, c):
-            if face == "F":
-                return (c-1, 1-r, 1)
-            if face == "B":
-                return (1-c, 1-r, -1)
-            if face == "R":
-                return (1, 1-r, c-1)
-            if face == "L":
-                return (-1, 1-r, 1-c)
-            if face == "U":
-                return (c-1, 1, r-1)
-            if face == "D":
-                return (c-1, -1, 1-r)
-
-        n, a, b = basis[face]
-        p = sticker_center(face, r, c)
-
-        horizontal = abs(dx) >= abs(dy)
-
-        # drag direction en plano de la cara (en coords de cubo)
-        if horizontal:
-            d = a if dx > 0 else (-a[0], -a[1], -a[2])
-        else:
-            # dy>0 es “hacia abajo” en pantalla => -b
-            d = (-b[0], -b[1], -b[2]) if dy > 0 else b
-
-        axis = cross(n, d)  # eje de giro (±x, ±y, ±z)
-
-        # elegir eje dominante
-        ax = [abs(axis[0]), abs(axis[1]), abs(axis[2])]
-        i = ax.index(max(ax))
-        axis_pos = "xyz"[i]
-        axis_sign = sgn(axis[i])
-
-        # layer: -1,0,1 según coordenada del sticker en ese eje
-        layer = int(round(p[i]))
-
-        # dirección de giro: probamos +90 sobre el eje real (con signo) usando v = w x p
-        axis_unit = (0, 0, 0)
-        axis_unit = (axis_sign, 0, 0) if axis_pos == "x" else axis_unit
-        axis_unit = (0, axis_sign, 0) if axis_pos == "y" else axis_unit
-        axis_unit = (0, 0, axis_sign) if axis_pos == "z" else axis_unit
-
-        v = cross(axis_unit, p)
-        rot_about_axis_unit = 1 if dot(v, d) > 0 else -1
-
-        # convertir a rotación sobre eje POSITIVO (x,y,z)
         rot_about_pos = rot_about_axis_unit * axis_sign
 
-        # mapear (axis_pos, layer, rot_about_pos) -> movimiento
+        # map convención del CubeModel geométrico
         if axis_pos == "y":
-            if layer == 1:   # U
+            if layer == 1:
                 return "U" if rot_about_pos == 1 else "U'"
-            if layer == 0:   # E (E es -90)
+            if layer == 0:
                 return "E'" if rot_about_pos == 1 else "E"
-            if layer == -1:  # D (D es -90)
+            if layer == -1:
                 return "D'" if rot_about_pos == 1 else "D"
 
         if axis_pos == "x":
-            if layer == 1:   # R (R es -90)
+            if layer == 1:
                 return "R'" if rot_about_pos == 1 else "R"
-            if layer == 0:   # M (M es +90)
+            if layer == 0:
                 return "M" if rot_about_pos == 1 else "M'"
-            if layer == -1:  # L (L es +90)
+            if layer == -1:
                 return "L" if rot_about_pos == 1 else "L'"
 
         if axis_pos == "z":
-            if layer == 1:   # F (F es -90)
+            if layer == 1:
                 return "F'" if rot_about_pos == 1 else "F"
-            if layer == 0:   # S (S es -90)
+            if layer == 0:
                 return "S'" if rot_about_pos == 1 else "S"
-            if layer == -1:  # B (B es +90)
+            if layer == -1:
                 return "B" if rot_about_pos == 1 else "B'"
 
         return None
 
-
+    # --------------------------
+    # Color map
+    # --------------------------
+    def _color_rgb(self, c: str):
+        palette = {
+            "W": (1.0, 1.0, 1.0),
+            "Y": (1.0, 1.0, 0.0),
+            "O": (1.0, 0.5, 0.0),
+            "R": (1.0, 0.0, 0.0),
+            "G": (0.0, 0.85, 0.0),
+            "B": (0.0, 0.35, 1.0),
+        }
+        return palette.get(c, (0.8, 0.8, 0.8))
