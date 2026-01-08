@@ -14,6 +14,11 @@ from OpenGL.GL import (
 )
 from OpenGL.GLU import gluPerspective
 
+# selecionar el color de highlight
+#hb = (1.0, 1.0, 0.2)  # amarillo suave
+hb = (0.10, 0.95, 0.85)  # calipso / turquesa
+
+
 
 class CubeGLWidget(QOpenGLWidget):
     """
@@ -367,7 +372,8 @@ class CubeGLWidget(QOpenGLWidget):
 
                 # highlight: dibuja un “marco” (quad más grande) antes del sticker
                 if highlight and highlight == (face, r, c):
-                    hb = (1.0, 1.0, 0.2)  # amarillo suave
+                    
+
                     hm = m * 0.35
                     v0 = (x_min + hm, y_min + hm, z)
                     v1 = (x_max - hm, y_min + hm, z)
@@ -397,7 +403,6 @@ class CubeGLWidget(QOpenGLWidget):
                 rgb = self._color_rgb(color)
 
                 if highlight and highlight == (face, r, c):
-                    hb = (1.0, 1.0, 0.2)
                     hm = m * 0.35
                     v0 = (x, y_min + hm, z_min + hm)
                     v1 = (x, y_min + hm, z_max - hm)
@@ -428,7 +433,6 @@ class CubeGLWidget(QOpenGLWidget):
                 rgb = self._color_rgb(color)
 
                 if highlight and highlight == (face, r, c):
-                    hb = (1.0, 1.0, 0.2)
                     hm = m * 0.35
                     v0 = (x_min + hm, y, z_min + hm)
                     v1 = (x_max - hm, y, z_min + hm)
