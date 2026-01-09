@@ -1,7 +1,7 @@
 # rubik_sim/app/main_window.py
 from __future__ import annotations
 
-from typing import Optional, Literal, Sequence, List
+from typing import List, Literal, Optional
 
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -28,17 +28,17 @@ Mode = Literal["normal", "undo", "redo", "apply", "scramble"]
 
 
 class MainWindow(QMainWindow):
-    """Ventana principal de la aplicación (UI) para el simulador 3D del cubo Rubik.
+    """Ventana principal (UI) del simulador 3D del cubo Rubik.
 
     Esta clase coordina:
-    - El modelo lógico del cubo (`CubeModel`)
-    - La visualización y animación 3D (`CubeGLWidget`)
-    - El historial (undo/redo)
-    - La búsqueda de solución en segundo plano (`SolveWorker`)
+    - Modelo lógico: `CubeModel`
+    - Render/animación 3D: `CubeGLWidget`
+    - Historial de movimientos (undo/redo)
+    - Búsqueda de solución en segundo plano: `SolveWorker` (IDDFS)
     """
 
     def __init__(self) -> None:
-        """Inicializa la ventana principal, crea la UI y conecta señales."""
+        """Inicializa la ventana, crea la UI y conecta señales."""
         super().__init__()
         self.setWindowTitle("Rubik 3D - PySide6")
 
@@ -49,7 +49,7 @@ class MainWindow(QMainWindow):
         # --- Historial ---
         self.history: List[str] = []
         self.redo_stack: List[str] = []
-        self._mode: Mode = "normal"  # normal | undo | redo | apply | scramble
+        self._mode: Mode = "normal"
         self._auto_apply_when_found: bool = False
 
         # --- Estado solver ---
@@ -65,14 +65,14 @@ class MainWindow(QMainWindow):
         panel_layout = QVBoxLayout(panel)
         panel.setFixedWidth(320)
 
-        self.lbl_state = QLabel("")
+        self.lbl_state: QLabel = QLabel("")
         panel_layout.addWidget(self.lbl_state)
 
         # Botones principales
         row_main = QHBoxLayout()
-        self.btn_reset = QPushButton("Reset")
-        self.btn_undo = QPushButton("Undo")
-        self.btn_redo = QPushButton("Redo")
+        self.btn_reset: QPushButton = QPushButton("Reset")
+        self.btn_undo: QPushButton = QPushButton("Undo")
+        self.btn_redo: QPushButton = QPushButton("Redo")
         row_main.addWidget(self.btn_reset)
         row_main.addWidget(self.btn_undo)
         row_main.addWidget(self.btn_redo)
@@ -81,27 +81,27 @@ class MainWindow(QMainWindow):
         # Scramble
         panel_layout.addWidget(QLabel("Scramble (mezclar)"))
         row_scr = QHBoxLayout()
-        self.spin_scramble = QSpinBox()
+        self.spin_scramble: QSpinBox = QSpinBox()
         self.spin_scramble.setRange(1, 200)
         self.spin_scramble.setValue(25)
-        self.btn_scramble = QPushButton("Scramble")
+        self.btn_scramble: QPushButton = QPushButton("Scramble")
         row_scr.addWidget(self.spin_scramble, 1)
         row_scr.addWidget(self.btn_scramble, 1)
         panel_layout.addLayout(row_scr)
 
         # Aplicar secuencia
         panel_layout.addWidget(QLabel("Aplicar secuencia (ej: R U R' U')"))
-        self.txt_seq = QLineEdit()
+        self.txt_seq: QLineEdit = QLineEdit()
         self.txt_seq.setPlaceholderText("Ej: R U R' U'")
         panel_layout.addWidget(self.txt_seq)
-        self.btn_apply = QPushButton("Aplicar")
+        self.btn_apply: QPushButton = QPushButton("Aplicar")
         panel_layout.addWidget(self.btn_apply)
 
-        # Solver (un solo bloque, 2 botones)
+        # Solver
         panel_layout.addWidget(QLabel("Resolver (IDDFS: buscar pasos / resolver)"))
 
         row_solve = QHBoxLayout()
-        self.spin_solve_depth = QSpinBox()
+        self.spin_solve_depth: QSpinBox = QSpinBox()
         self.spin_solve_depth.setRange(1, 10)
         self.spin_solve_depth.setValue(7)
         row_solve.addWidget(QLabel("Depth"), 0)
@@ -109,34 +109,34 @@ class MainWindow(QMainWindow):
         panel_layout.addLayout(row_solve)
 
         row_solve_btns = QHBoxLayout()
-        self.btn_find_solve = QPushButton("Buscar solución")
-        self.btn_solve = QPushButton("Solve (auto)")
+        self.btn_find_solve: QPushButton = QPushButton("Buscar solución")
+        self.btn_solve: QPushButton = QPushButton("Solve (auto)")
         row_solve_btns.addWidget(self.btn_find_solve)
         row_solve_btns.addWidget(self.btn_solve)
         panel_layout.addLayout(row_solve_btns)
 
-        self.btn_cancel_solve = QPushButton("Cancelar búsqueda")
+        self.btn_cancel_solve: QPushButton = QPushButton("Cancelar búsqueda")
         panel_layout.addWidget(self.btn_cancel_solve)
 
-        self.solve_status = QLabel("Listo.")
+        self.solve_status: QLabel = QLabel("Listo.")
         panel_layout.addWidget(self.solve_status)
 
-        self.solve_bar = QProgressBar()
+        self.solve_bar: QProgressBar = QProgressBar()
         self.solve_bar.setRange(0, 1)
         self.solve_bar.setValue(0)
         panel_layout.addWidget(self.solve_bar)
 
         panel_layout.addWidget(QLabel("Pasos encontrados"))
-        self.list_solution = QListWidget()
+        self.list_solution: QListWidget = QListWidget()
         panel_layout.addWidget(self.list_solution, 1)
 
-        self.btn_apply_solution = QPushButton("Aplicar solución")
+        self.btn_apply_solution: QPushButton = QPushButton("Aplicar solución")
         self.btn_apply_solution.setEnabled(False)
         panel_layout.addWidget(self.btn_apply_solution)
 
         # Historial (movimientos)
         panel_layout.addWidget(QLabel("Historial de movimientos"))
-        self.list_history = QListWidget()
+        self.list_history: QListWidget = QListWidget()
         panel_layout.addWidget(self.list_history, 1)
 
         root_layout.addWidget(panel)
@@ -281,9 +281,6 @@ class MainWindow(QMainWindow):
         self.solve_bar.setValue(0)
         self._update_solution_buttons()
 
-        self._pending_solution = None
-        self.btn_apply_solution.setEnabled(False)
-
     def on_undo(self) -> None:
         """Revierte el último movimiento (si existe historial y no hay animación)."""
         if self.gl_widget.animating or not self.history:
@@ -309,7 +306,7 @@ class MainWindow(QMainWindow):
         self.gl_widget.start_move_animation(mv)
 
     def on_apply_sequence(self) -> None:
-        """Aplica una secuencia ingresada por el usuario (ej: 'R U R' U'')."""
+        """Aplica una secuencia ingresada por el usuario (ej: "R U R' U'")."""
         seq = self.txt_seq.text().strip()
         if not seq:
             return
@@ -323,7 +320,7 @@ class MainWindow(QMainWindow):
 
         try:
             self.gl_widget.play_sequence(seq)
-        except Exception as exc:  # noqa: BLE001 (queremos mostrar el mensaje al usuario)
+        except Exception as exc:  # noqa: BLE001 (mostrar mensaje al usuario)
             self._set_controls_enabled(True)
             QMessageBox.warning(self, "Secuencia inválida", str(exc))
 
@@ -341,7 +338,6 @@ class MainWindow(QMainWindow):
 
         self.redo_stack.clear()
         self._mode = "scramble"
-
         self._set_controls_enabled(False)
         self.gl_widget.play_sequence(scramble_seq)
 
@@ -380,7 +376,6 @@ class MainWindow(QMainWindow):
         self.solve_status.repaint()
         self.solve_bar.repaint()
 
-        self.btn_cancel_solve.setEnabled(True)
         self._set_controls_enabled(False)
 
         self._solve_worker = SolveWorker(self.model, depth)
@@ -402,7 +397,7 @@ class MainWindow(QMainWindow):
         """Recibe el resultado final del solver (solución o None).
 
         Args:
-            sol: Lista de movimientos si se encontró solución; None en caso contrario.
+            sol: Lista de movimientos si se encontró solución; None si no.
         """
         self.solve_bar.setRange(0, 1)
         self.solve_bar.setValue(1)
@@ -503,10 +498,7 @@ class MainWindow(QMainWindow):
 
     def _update_solution_buttons(self) -> None:
         """Habilita/deshabilita el botón de aplicar solución según el estado actual."""
-        # Si está resuelto, no tiene sentido aplicar solución
         if self.model.is_solved():
             self.btn_apply_solution.setEnabled(False)
             return
-
-        # Si no está resuelto, solo habilita si hay solución pendiente
         self.btn_apply_solution.setEnabled(self._pending_solution is not None)
