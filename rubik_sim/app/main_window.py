@@ -1,37 +1,60 @@
 # rubik_sim/app/main_window.py
-import random
+from __future__ import annotations
+
+from typing import Optional, Literal, Sequence, List
+
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QLineEdit, QSpinBox, QListWidget,
-    QMessageBox, QProgressBar
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-from rubik_sim.core.cube_model import CubeModel
-from rubik_sim.render.cube_gl_widget import CubeGLWidget
 from rubik_sim.app.solve_worker import SolveWorker
-from rubik_sim.logic.moves import inverse_move, parse_sequence
+from rubik_sim.core.cube_model import CubeModel
+from rubik_sim.logic.moves import inverse_move
 from rubik_sim.logic.scramble import generate_scramble
+from rubik_sim.render.cube_gl_widget import CubeGLWidget
 
+Mode = Literal["normal", "undo", "redo", "apply", "scramble"]
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    """Ventana principal de la aplicación (UI) para el simulador 3D del cubo Rubik.
+
+    Esta clase coordina:
+    - El modelo lógico del cubo (`CubeModel`)
+    - La visualización y animación 3D (`CubeGLWidget`)
+    - El historial (undo/redo)
+    - La búsqueda de solución en segundo plano (`SolveWorker`)
+    """
+
+    def __init__(self) -> None:
+        """Inicializa la ventana principal, crea la UI y conecta señales."""
         super().__init__()
         self.setWindowTitle("Rubik 3D - PySide6")
 
         # --- Modelo + render ---
-        self.model = CubeModel()
-        self.gl_widget = CubeGLWidget(self.model, self)
+        self.model: CubeModel = CubeModel()
+        self.gl_widget: CubeGLWidget = CubeGLWidget(self.model, self)
 
         # --- Historial ---
-        self.history = []
-        self.redo_stack = []
-        self._mode = "normal"  # normal | undo | redo | apply | scramble
-        self._auto_apply_when_found = False
+        self.history: List[str] = []
+        self.redo_stack: List[str] = []
+        self._mode: Mode = "normal"  # normal | undo | redo | apply | scramble
+        self._auto_apply_when_found: bool = False
 
         # --- Estado solver ---
-        self._pending_solution = None
-        self._solve_worker = None
+        self._pending_solution: Optional[List[str]] = None
+        self._solve_worker: Optional[SolveWorker] = None
 
         # --- UI ---
         root = QWidget()
@@ -93,7 +116,6 @@ class MainWindow(QMainWindow):
         panel_layout.addLayout(row_solve_btns)
 
         self.btn_cancel_solve = QPushButton("Cancelar búsqueda")
-        self.btn_cancel_solve.setEnabled(False)
         panel_layout.addWidget(self.btn_cancel_solve)
 
         self.solve_status = QLabel("Listo.")
@@ -145,16 +167,34 @@ class MainWindow(QMainWindow):
     # -------------------
     # Helpers UI
     # -------------------
-    def _refresh_state_label(self):
-        self.lbl_state.setText("Estado: resuelto ✅" if self.model.is_solved() else "Estado: mezclado 🔄")
+    def _refresh_state_label(self) -> None:
+        """Actualiza el label de estado del cubo y la disponibilidad de botones."""
+        self.lbl_state.setText(
+            "Estado: resuelto ✅" if self.model.is_solved() else "Estado: mezclado 🔄"
+        )
         self._update_solution_buttons()
 
-    def _push_history(self, move: str):
+    def _push_history(self, move: str) -> None:
+        """Agrega un movimiento al historial y actualiza la lista visual.
+
+        Args:
+            move: Movimiento en notación del cubo (ej: "R", "U'", "F2").
+        """
         self.history.append(move)
         self.list_history.addItem(move)
         self.list_history.scrollToBottom()
 
-    def _set_controls_enabled(self, enabled: bool):
+    def _is_gl_idle(self) -> bool:
+        """Indica si el widget OpenGL está sin animación y sin cola pendiente."""
+        queue = getattr(self.gl_widget, "_move_queue", [])
+        return (not self.gl_widget.animating) and (not queue)
+
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        """Habilita o deshabilita los controles principales.
+
+        Args:
+            enabled: True para habilitar; False para deshabilitar (por ejemplo durante animación).
+        """
         self.btn_reset.setEnabled(enabled)
         self.btn_undo.setEnabled(enabled)
         self.btn_redo.setEnabled(enabled)
@@ -165,19 +205,31 @@ class MainWindow(QMainWindow):
         self.spin_solve_depth.setEnabled(enabled)
         self.btn_find_solve.setEnabled(enabled)
         self.btn_solve.setEnabled(enabled)
-        self.btn_apply_solution.setEnabled(enabled and (self._pending_solution is not None) and (not self.model.is_solved()))
 
-        self.btn_cancel_solve.setEnabled(not enabled and self._solve_worker is not None and self._solve_worker.isRunning())
+        can_apply_solution = (
+            enabled
+            and (self._pending_solution is not None)
+            and (not self.model.is_solved())
+        )
+        self.btn_apply_solution.setEnabled(can_apply_solution)
 
     # -------------------
     # Movimiento aplicado (desde GL)
     # -------------------
-    def on_move_applied(self, move: str):
+    def on_move_applied(self, move: str) -> None:
+        """Callback cuando el GL widget confirma que un movimiento terminó de aplicarse.
+
+        Dependiendo del modo (undo/redo/apply/scramble/normal), se registra o no en historial,
+        y se re-habilitan controles al finalizar la cola.
+
+        Args:
+            move: Movimiento aplicado (notación estándar).
+        """
         # Si es Undo, NO lo guardamos (porque ya sacamos el último del historial)
         if self._mode == "undo":
             self._mode = "normal"
             self._refresh_state_label()
-            if not self.gl_widget.animating and not getattr(self.gl_widget, "_move_queue", []):
+            if self._is_gl_idle():
                 self._set_controls_enabled(True)
             return
 
@@ -188,14 +240,15 @@ class MainWindow(QMainWindow):
         if self._mode == "normal":
             self.redo_stack.clear()
 
-        # Si terminó la cola, re-habilitar
         self._refresh_state_label()
-        
+
+        # Si el cubo quedó resuelto, una solución pendiente deja de tener sentido
         if self.model.is_solved():
             self._pending_solution = None
             self.btn_apply_solution.setEnabled(False)
 
-        if not self.gl_widget.animating and not getattr(self.gl_widget, "_move_queue", []):
+        # Si terminó la cola, re-habilitar
+        if self._is_gl_idle():
             self._mode = "normal"
             self.solve_status.setText("Listo.")
             self.solve_bar.setRange(0, 1)
@@ -205,7 +258,8 @@ class MainWindow(QMainWindow):
     # -------------------
     # Botones básicos
     # -------------------
-    def on_reset(self):
+    def on_reset(self) -> None:
+        """Resetea el cubo, historial, estado de solver y UI."""
         self.gl_widget.cancel_animation(clear_queue=True)
         self.cancel_solve_search()
 
@@ -221,6 +275,7 @@ class MainWindow(QMainWindow):
         self.gl_widget.selected = None
         self.gl_widget.update()
         self._refresh_state_label()
+
         self.solve_status.setText("Listo.")
         self.solve_bar.setRange(0, 1)
         self.solve_bar.setValue(0)
@@ -229,7 +284,8 @@ class MainWindow(QMainWindow):
         self._pending_solution = None
         self.btn_apply_solution.setEnabled(False)
 
-    def on_undo(self):
+    def on_undo(self) -> None:
+        """Revierte el último movimiento (si existe historial y no hay animación)."""
         if self.gl_widget.animating or not self.history:
             return
 
@@ -242,7 +298,8 @@ class MainWindow(QMainWindow):
         self._set_controls_enabled(False)
         self.gl_widget.start_move_animation(inv)
 
-    def on_redo(self):
+    def on_redo(self) -> None:
+        """Re-aplica el último movimiento deshecho (si existe redo y no hay animación)."""
         if self.gl_widget.animating or not self.redo_stack:
             return
 
@@ -251,7 +308,8 @@ class MainWindow(QMainWindow):
         self._set_controls_enabled(False)
         self.gl_widget.start_move_animation(mv)
 
-    def on_apply_sequence(self):
+    def on_apply_sequence(self) -> None:
+        """Aplica una secuencia ingresada por el usuario (ej: 'R U R' U'')."""
         seq = self.txt_seq.text().strip()
         if not seq:
             return
@@ -265,15 +323,16 @@ class MainWindow(QMainWindow):
 
         try:
             self.gl_widget.play_sequence(seq)
-        except Exception as e:
+        except Exception as exc:  # noqa: BLE001 (queremos mostrar el mensaje al usuario)
             self._set_controls_enabled(True)
-            QMessageBox.warning(self, "Secuencia inválida", str(e))
+            QMessageBox.warning(self, "Secuencia inválida", str(exc))
 
-    def on_scramble(self):
+    def on_scramble(self) -> None:
+        """Mezcla el cubo aplicando una secuencia aleatoria de N movimientos."""
         if self.gl_widget.animating:
             return
 
-        # cancela búsqueda y animación actual
+        # Cancela búsqueda y animación actual
         self.cancel_solve_search()
         self.gl_widget.cancel_animation(clear_queue=True)
 
@@ -286,17 +345,23 @@ class MainWindow(QMainWindow):
         self._set_controls_enabled(False)
         self.gl_widget.play_sequence(scramble_seq)
 
-
     # -------------------
     # Solver (thread)
     # -------------------
-    def on_find_solution(self):
+    def on_find_solution(self) -> None:
+        """Inicia búsqueda de solución sin aplicarla automáticamente."""
         self._start_solve_search(auto_apply=False)
 
-    def on_solve(self):
+    def on_solve(self) -> None:
+        """Inicia búsqueda de solución y la aplica automáticamente si se encuentra."""
         self._start_solve_search(auto_apply=True)
 
-    def _start_solve_search(self, auto_apply: bool):
+    def _start_solve_search(self, auto_apply: bool) -> None:
+        """Lanza un hilo de búsqueda (IDDFS) para encontrar una solución.
+
+        Args:
+            auto_apply: Si True, al encontrar solución se aplica inmediatamente.
+        """
         if self.gl_widget.animating:
             return
         if self._solve_worker is not None and self._solve_worker.isRunning():
@@ -308,6 +373,7 @@ class MainWindow(QMainWindow):
         self._pending_solution = None
         self.list_solution.clear()
         self.btn_apply_solution.setEnabled(False)
+        self.btn_cancel_solve.setEnabled(True)
 
         self.solve_status.setText("Buscando solución...")
         self.solve_bar.setRange(0, 0)  # indeterminado
@@ -324,16 +390,28 @@ class MainWindow(QMainWindow):
         self._solve_worker.finished.connect(self._on_solve_thread_finished)
         self._solve_worker.start()
 
-    def _on_solve_depth_update(self, d: int):
+    def _on_solve_depth_update(self, d: int) -> None:
+        """Actualiza el texto de estado durante la búsqueda incremental.
+
+        Args:
+            d: Profundidad actual que se está probando.
+        """
         self.solve_status.setText(f"Buscando... probando profundidad {d}")
 
-    def _on_solve_finished(self, sol):
+    def _on_solve_finished(self, sol: Optional[List[str]]) -> None:
+        """Recibe el resultado final del solver (solución o None).
+
+        Args:
+            sol: Lista de movimientos si se encontró solución; None en caso contrario.
+        """
         self.solve_bar.setRange(0, 1)
         self.solve_bar.setValue(1)
         self.btn_cancel_solve.setEnabled(False)
 
         if sol is None:
-            self.solve_status.setText("No se encontró solución (sube depth o usa scramble corto).")
+            self.solve_status.setText(
+                "No se encontró solución (sube depth o usa scramble corto)."
+            )
             self._pending_solution = None
             self.btn_apply_solution.setEnabled(False)
             self._set_controls_enabled(True)
@@ -354,9 +432,8 @@ class MainWindow(QMainWindow):
         else:
             self._set_controls_enabled(True)
 
-   
-
-    def on_apply_solution(self):
+    def on_apply_solution(self) -> None:
+        """Aplica la solución encontrada por el solver, si existe."""
         if not self._pending_solution:
             return
         if self.gl_widget.animating:
@@ -374,7 +451,12 @@ class MainWindow(QMainWindow):
 
         self.gl_widget.play_sequence(seq)
 
-    def _on_solve_error(self, msg: str):
+    def _on_solve_error(self, msg: str) -> None:
+        """Maneja errores emitidos por el hilo del solver.
+
+        Args:
+            msg: Mensaje/trace del error.
+        """
         self.solve_bar.setRange(0, 1)
         self.solve_bar.setValue(0)
         self.solve_status.setText("Error en la búsqueda (revisa consola).")
@@ -384,12 +466,14 @@ class MainWindow(QMainWindow):
         print("=== ERROR SOLVER THREAD ===")
         print(msg)
 
-    def _on_solve_thread_finished(self):
+    def _on_solve_thread_finished(self) -> None:
+        """Limpia el worker cuando el hilo finaliza."""
         if self._solve_worker is not None:
             self._solve_worker.deleteLater()
             self._solve_worker = None
 
-    def cancel_solve_search(self):
+    def cancel_solve_search(self) -> None:
+        """Cancela la búsqueda del solver si está corriendo y limpia el estado asociado."""
         if self._solve_worker is not None and self._solve_worker.isRunning():
             self._solve_worker.requestInterruption()
             self._solve_worker.wait(300)
@@ -403,16 +487,22 @@ class MainWindow(QMainWindow):
         self.solve_bar.setValue(0)
         self.btn_cancel_solve.setEnabled(False)
 
-        # no tocar animación del cubo aquí (solo cancela búsqueda)
+        # No tocar animación del cubo aquí (solo cancela búsqueda)
         self._set_controls_enabled(True)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Evento de cierre de ventana: detiene el hilo del solver si está activo.
+
+        Args:
+            event: Evento de cierre de Qt.
+        """
         if self._solve_worker is not None and self._solve_worker.isRunning():
             self._solve_worker.requestInterruption()
             self._solve_worker.wait(1500)
         event.accept()
 
-    def _update_solution_buttons(self):
+    def _update_solution_buttons(self) -> None:
+        """Habilita/deshabilita el botón de aplicar solución según el estado actual."""
         # Si está resuelto, no tiene sentido aplicar solución
         if self.model.is_solved():
             self.btn_apply_solution.setEnabled(False)
