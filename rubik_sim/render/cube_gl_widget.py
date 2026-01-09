@@ -27,7 +27,8 @@ class CubeGLWidget(QOpenGLWidget):
     - Drag (cámara-aware) => movimiento por capa (incluye E/M/S)
     - Animación suave con QTimer
     """
-
+    move_applied = Signal(str)  
+    
     def __init__(self, model, parent=None):
         super().__init__(parent)
         self.model = model
