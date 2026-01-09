@@ -2,10 +2,10 @@
 import sys
 from PySide6.QtWidgets import QApplication
 from rubik_sim.app.main_window import MainWindow
-
-# Activar entorno virutual
+# Desde consola powershell de windows:
+#    Activar entorno virutual
 # .\.venv\Scripts\Activate.ps1
-# instalcion de dependencias (estar en la raiz del proyecto)
+#   Instalacion de dependencias (ojo : desde la raiz del proyecto)
 # python -m pip install --upgrade pip
 # python -m pip install -r requirements.txt
 
