@@ -50,13 +50,19 @@ requirements.txt
 python -m venv .venv
 
 # 2) Activar entorno virtual:
-# ```powershell
+# ```powershellG
 .\.venv\Scripts\Activate.ps1
+
+# 2.5)Si aparece un error de políticas de ejecución, ejecutar una vez:
+ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+
+--- luego, repetir paso #2)
 
 # 3) Instalar dependencias:
 # (.venv)
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+
 
 # 4) Tests:
 # (.venv) 

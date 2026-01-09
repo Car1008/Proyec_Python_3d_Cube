@@ -293,15 +293,15 @@ class CubeModel:
         elif base == "L":
             self._rotate_layer("x", -1, +1)
         elif base == "F":
-            self._rotate_layer("z", 1, -1)
+            self._rotate_layer("z", +1, +1)
         elif base == "B":
-            self._rotate_layer("z", -1, +1)
+            self._rotate_layer("z", -1, -1)
         elif base == "M":
             self._rotate_layer("x", 0, +1)
         elif base == "E":
             self._rotate_layer("y", 0, -1)
         elif base == "S":
-            self._rotate_layer("z", 0, -1)
+            self._rotate_layer("z", 0, +1)
         else:
             raise ValueError(f"Movimiento no soportado: {base}")
 
