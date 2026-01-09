@@ -9,23 +9,9 @@ from PySide6.QtWidgets import (
 from rubik_sim.core.cube_model import CubeModel
 from rubik_sim.render.cube_gl_widget import CubeGLWidget
 from rubik_sim.app.solve_worker import SolveWorker
+from rubik_sim.logic.moves import inverse_move, parse_sequence
+from rubik_sim.logic.scramble import generate_scramble
 
-
-def inverse_move(m: str) -> str:
-    m = m.strip()
-    if not m:
-        return m
-    base = m[0]
-    suf = m[1:] if len(m) > 1 else ""
-    if suf == "":
-        return base + "'"
-    if suf == "'":
-        return base
-    if suf == "2":
-        return base + "2"
-    if suf == "2'":
-        return base + "2"
-    return m
 
 
 class MainWindow(QMainWindow):
@@ -287,26 +273,19 @@ class MainWindow(QMainWindow):
         if self.gl_widget.animating:
             return
 
+        # cancela búsqueda y animación actual
         self.cancel_solve_search()
         self.gl_widget.cancel_animation(clear_queue=True)
 
         n = int(self.spin_scramble.value())
-        faces = ["U", "D", "L", "R", "F", "B"]
-        suffix = ["", "'", "2"]
-
-        seq = []
-        last_face = None
-        for _ in range(n):
-            face = random.choice([m for m in faces if m != last_face])
-            last_face = face
-            seq.append(face + random.choice(suffix))
-
-        scramble_seq = " ".join(seq)
+        scramble_seq = generate_scramble(n)
 
         self.redo_stack.clear()
         self._mode = "scramble"
+
         self._set_controls_enabled(False)
         self.gl_widget.play_sequence(scramble_seq)
+
 
     # -------------------
     # Solver (thread)
