@@ -1,7 +1,7 @@
 # rubik_sim/render/cube_gl_widget.py
 import math
 
-from PySide6.QtCore import Qt, QPoint, QTimer
+from PySide6.QtCore import Qt, QPoint, QTimer, Signal
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from OpenGL.GL import (
@@ -15,6 +15,7 @@ from OpenGL.GL import (
     GL_DITHER, GL_BLEND
 )
 from OpenGL.GLU import gluPerspective
+
 
 
 class CubeGLWidget(QOpenGLWidget):
@@ -339,6 +340,8 @@ class CubeGLWidget(QOpenGLWidget):
         self.anim_move = None
 
         self.model.apply_move(move)
+        self.move_applied.emit(move)
+
         self.update()
 
         if self._move_queue:
@@ -701,3 +704,29 @@ class CubeGLWidget(QOpenGLWidget):
             "B": (0.0, 0.35, 1.0),
         }
         return palette.get(c, (0.8, 0.8, 0.8))
+
+    
+    def cancel_animation(self, clear_queue=True):
+        if self.animating:
+            self.animating = False
+            self._anim_timer.stop()
+
+            self.anim_axis = None
+            self.anim_layer = None
+            self.anim_sign = 1
+            self.anim_angle = 0.0
+            self.anim_target = 90.0
+            self.anim_move = None
+
+        if clear_queue:
+            self._move_queue.clear()
+
+        self.update()
+
+
+    def play_sequence(self, seq: str):
+        tokens = [t.strip() for t in seq.split() if t.strip()]
+        if not tokens:
+            return
+        for t in tokens:
+            self.start_move_animation(t)

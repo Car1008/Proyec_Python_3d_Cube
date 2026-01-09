@@ -225,3 +225,6 @@ class CubeModel:
             self._rotate_layer("z", 0, -1)
         else:
             raise ValueError(f"Movimiento no soportado: {base}")
+
+    def reset(self):
+        self.state = {f: [self.COLORS_SOLVED[f]] * 9 for f in self.FACES}
