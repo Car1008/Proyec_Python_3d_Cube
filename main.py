@@ -1,16 +1,23 @@
 # main.py
+from __future__ import annotations
+
 import sys
+from typing import NoReturn
+
 from PySide6.QtWidgets import QApplication
+
 from rubik_sim.app.main_window import MainWindow
-# Desde consola powershell de windows:
-#    Activar entorno virutual
-# .\.venv\Scripts\Activate.ps1
-#   Instalacion de dependencias (ojo : desde la raiz del proyecto)
-# python -m pip install --upgrade pip
-# python -m pip install -r requirements.txt
 
 
-def main():
+def main() -> NoReturn:
+    """Punto de entrada de la aplicación.
+
+    Crea la instancia de `QApplication`, construye la ventana principal
+    (`MainWindow`) y ejecuta el loop de eventos de Qt.
+
+    Returns:
+        No retorna (finaliza el proceso con `sys.exit`).
+    """
     app = QApplication(sys.argv)
     w = MainWindow()
     w.show()
